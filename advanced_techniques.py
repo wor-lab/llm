@@ -1,238 +1,106 @@
 """
-Advanced optimization techniques for Qwen Agent
-Program-of-Thoughts, Tree-of-Thoughts, and more
+Advanced Coding Techniques for 90%+ Performance
+Includes: Test-Driven Development, Self-Debugging, Multi-Solution Voting, Code Evolution
 """
 
-from typing import List, Dict, Any
-from agent_layer import QwenAgent, ReasoningEngine
+from typing import List, Dict, Any, Optional, Tuple
+from collections import Counter
+import re
+import ast
+
+from agent_layer import CodingAgent, CodeExecutor, CodeValidator, CodeExtractor
 
 
-class AdvancedTechniques:
-    """Advanced reasoning techniques to boost performance"""
+class TestDrivenDevelopment:
+    """TDD approach for code generation"""
     
-    def __init__(self, agent: QwenAgent):
+    def __init__(self, agent: CodingAgent):
         self.agent = agent
-        self.reasoning = ReasoningEngine()
+        self.executor = CodeExecutor()
     
-    def program_of_thoughts(self, question: str) -> str:
-        """
-        Program-of-Thoughts: Generate code to solve the problem
-        Best for: Math problems, logic puzzles
-        """
-        prompt = f"""Solve this problem by writing Python code that prints the answer.
+    def generate_from_tests(
+        self,
+        function_name: str,
+        test_cases: List[Dict[str, Any]],
+        description: str = ""
+    ) -> Dict[str, Any]:
+        """Generate code that passes given tests"""
+        
+        # Create test suite description
+        test_descriptions = []
+        for i, test in enumerate(test_cases):
+            inp = test.get('input', '')
+            out = test.get('output', '')
+            test_descriptions.append(f"Test {i+1}: {function_name}({inp}) should return {out}")
+        
+        tests_str = "\n".join(test_descriptions)
+        
+        prompt = f"""Write a Python function that passes these tests:
 
-Problem: {question}
+Function: {function_name}
+{f"Description: {description}" if description else ""}
+
+Tests:
+{tests_str}
+
+Generate a complete, correct implementation:
 
 ```python
-# Solution code - print only the final answer
+def {function_name}():
 """
-        response = self.agent.generate(prompt, temperature=0.3)
-        code = self.reasoning.extract_code(response)
         
-        if code and self.agent.tools.validate_syntax(code):
-            result = self.agent.tools.execute_python(code)
-            if result['success']:
-                return result['output']
-        
-        return ""
-    
-    def tree_of_thoughts(self, question: str, num_branches: int = 3, depth: int = 2) -> str:
-        """
-        Tree-of-Thoughts: Explore multiple reasoning paths
-        Best for: Complex problems requiring exploration
-        """
-        branches = []
-        
-        # Generate multiple initial approaches
-        for i in range(num_branches):
-            prompt = f"""Solve this problem using approach #{i+1}:
-
-{question}
-
-Approach {i+1} solution:"""
-            
-            response = self.agent.generate(prompt, temperature=0.8)
-            branches.append({
-                'approach': i+1,
-                'reasoning': response,
-                'answer': self.reasoning.extract_answer(response)
-            })
-        
-        # Meta-reasoning to select best answer
-        branches_text = "\n\n".join([
-            f"Approach {b['approach']}:\n{b['reasoning']}\nAnswer: {b['answer']}"
-            for b in branches
-        ])
-        
-        meta_prompt = f"""Given these {num_branches} different solution approaches to the problem:
-
-{question}
-
-Solutions:
-{branches_text}
-
-Which answer is most likely correct? Explain why and provide the final answer.
-
-Analysis:"""
-        
-        final_response = self.agent.generate(meta_prompt, temperature=0.2)
-        return self.reasoning.extract_answer(final_response)
-    
-    def iterative_refinement(self, question: str, max_iterations: int = 3) -> str:
-        """
-        Iterative Refinement: Improve answer through self-critique
-        Best for: Complex problems requiring careful reasoning
-        """
-        prompt = f"Solve this problem:\n\n{question}\n\nAnswer:"
-        answer = self.agent.generate(prompt, temperature=0.5)
-        
+        # Iterative generation until all tests pass
+        max_iterations = 5
         for iteration in range(max_iterations):
-            critique_prompt = f"""Original problem: {question}
-
-Your previous answer:
-{answer}
-
-Critique your answer:
-1. Are there any errors in reasoning?
-2. Can the answer be improved?
-3. Provide a refined answer.
-
-Refined answer:"""
+            response = self.agent.generate(prompt, temperature=0.2)
+            code = self.agent.extractor.extract_code(response)
             
-            answer = self.agent.generate(critique_prompt, temperature=0.3)
-        
-        return self.reasoning.extract_answer(answer)
-    
-    def least_to_most(self, question: str) -> str:
-        """
-        Least-to-Most Prompting: Break down into subproblems
-        Best for: Complex multi-step problems
-        """
-        # Step 1: Decompose into subproblems
-        decompose_prompt = f"""Break down this problem into smaller subproblems:
-
-Problem: {question}
-
-List the subproblems we need to solve:
-1."""
-        
-        decomposition = self.agent.generate(decompose_prompt, temperature=0.3)
-        
-        # Step 2: Solve each subproblem
-        solve_prompt = f"""Original problem: {question}
-
-Subproblems identified:
-{decomposition}
-
-Now solve each subproblem in order and combine for the final answer:
-
-Solution:"""
-        
-        solution = self.agent.generate(solve_prompt, temperature=0.3, max_tokens=2048)
-        return self.reasoning.extract_answer(solution)
-    
-    def chain_of_verification(self, question: str, answer: str) -> Dict[str, Any]:
-        """
-        Chain-of-Verification: Verify the answer
-        Returns: {'verified': bool, 'corrected_answer': str}
-        """
-        verify_prompt = f"""Problem: {question}
-
-Proposed answer: {answer}
-
-Verify this answer step by step:
-1. Is the reasoning correct?
-2. Are there any calculation errors?
-3. Is the final answer correct?
-
-Verification:"""
-        
-        verification = self.agent.generate(verify_prompt, temperature=0.2)
-        
-        # Check if verification found issues
-        is_correct = any(word in verification.lower() for word in ['correct', 'yes', 'accurate', 'right'])
-        has_error = any(word in verification.lower() for word in ['error', 'wrong', 'incorrect', 'mistake'])
-        
-        if has_error:
-            # Generate corrected answer
-            corrected_answer = self.reasoning.extract_answer(verification)
-            return {
-                'verified': False,
-                'original_answer': answer,
-                'corrected_answer': corrected_answer,
-                'verification': verification
-            }
+            # Run tests
+            test_results = self.executor.run_tests(code, test_cases)
+            
+            if test_results['pass_rate'] == 1.0:
+                return {
+                    'code': code,
+                    'success': True,
+                    'iterations': iteration + 1,
+                    'test_results': test_results
+                }
+            
+            # Add feedback
+            failed = [r for r in test_results['results'] if not r['passed']]
+            feedback = f"\n\nFailed {len(failed)} tests. Examples:\n"
+            for r in failed[:3]:
+                feedback += f"  Expected {r['expected']}, got {r['actual']}\n"
+            
+            prompt += feedback + "\nGenerate corrected code:\n```python\n"
         
         return {
-            'verified': True,
-            'answer': answer,
-            'verification': verification
+            'code': code,
+            'success': False,
+            'iterations': max_iterations,
+            'test_results': test_results
         }
-    
-    def multimodal_cot(self, question: str, use_code: bool = True, use_sc: bool = True) -> str:
-        """
-        Multimodal Chain-of-Thought: Combine multiple strategies
-        Best for: Maximum accuracy on important problems
-        """
-        answers = []
-        
-        # 1. Standard CoT
-        cot_answer = self.agent.solve_gsm8k(question, use_code=False)['answer']
-        answers.append(('cot', cot_answer))
-        
-        # 2. Program-of-Thoughts
-        if use_code:
-            pot_answer = self.program_of_thoughts(question)
-            if pot_answer:
-                answers.append(('pot', pot_answer))
-        
-        # 3. Self-Consistency
-        if use_sc:
-            sc_answer = self.agent.self_consistency(
-                f"Solve: {question}\n\nAnswer:",
-                n=3
-            )
-            answers.append(('sc', sc_answer))
-        
-        # Vote or use verification
-        if len(answers) >= 2:
-            from collections import Counter
-            normalized_answers = [
-                self.reasoning.normalize_answer(ans[1]) for ans in answers
-            ]
-            counter = Counter(normalized_answers)
-            most_common = counter.most_common(1)[0][0]
-            return most_common
-        
-        return answers[0][1] if answers else ""
 
 
-# Example usage
-if __name__ == "__main__":
-    from agent_layer import QwenAgent, AgentConfig
+class SelfDebuggingAgent:
+    """Agent that debugs its own code"""
     
-    print("🔬 Testing Advanced Techniques\n")
+    def __init__(self, agent: CodingAgent):
+        self.agent = agent
+        self.executor = CodeExecutor()
+        self.validator = CodeValidator()
     
-    # Initialize
-    config = AgentConfig(num_samples=3)
-    agent = QwenAgent(config)
-    advanced = AdvancedTechniques(agent)
-    
-    question = "A store has 120 apples. They sell 30% in the morning and 25% of the remainder in the afternoon. How many apples are left?"
-    
-    # Test different techniques
-    print("1️⃣ Program-of-Thoughts")
-    pot_answer = advanced.program_of_thoughts(question)
-    print(f"Answer: {pot_answer}\n")
-    
-    print("2️⃣ Tree-of-Thoughts")
-    tot_answer = advanced.tree_of_thoughts(question, num_branches=2)
-    print(f"Answer: {tot_answer}\n")
-    
-    print("3️⃣ Iterative Refinement")
-    iter_answer = advanced.iterative_refinement(question, max_iterations=2)
-    print(f"Answer: {iter_answer}\n")
-    
-    print("4️⃣ Multimodal CoT")
-    multi_answer = advanced.multimodal_cot(question)
-    print(f"Answer: {multi_answer}\n")
+    def debug_code(
+        self,
+        code: str,
+        error_message: str = "",
+        test_case: Dict[str, Any] = None
+    ) -> Dict[str, Any]:
+        """Debug code using error message and test case"""
+        
+        # Analyze the error
+        debug_prompt = f"""Debug this Python code that has an error:
+
+Code:
+```python
+{code}
