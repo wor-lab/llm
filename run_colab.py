@@ -29,7 +29,7 @@ print("="*70 + "\n")
 @dataclass
 class AgentConfig:
     # Use larger model for better performance (still fits in T4)
-    model_name: str = "Qwen/Qwen3-0.6B"  # Upgraded from 0.5B
+    model_name: str = "Qwen/Qwen3-1.7B"  # Upgraded from 0.5B
     max_iterations: int = 5
     temperature: float = 0.3  # Lower for more focused answers
     top_p: float = 0.9
