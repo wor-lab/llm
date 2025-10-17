@@ -10,7 +10,7 @@ from typing import Dict, List, Any, Optional
 @dataclass
 class BenchmarkConfig:
     """Base configuration for all benchmarks"""
-    model_name: str = "Qwen/Qwen2.5-1.5B-Instruct"
+    model_name: str = "Qwen/Qwen3-1.7B"
     temperature: float = 0.3
     top_p: float = 0.95
     max_tokens: int = 4096
