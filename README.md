@@ -4,6 +4,7 @@
 !python run_colab.py
 
 ---
+```
 import requests
 
 response = requests.post(
@@ -20,6 +21,7 @@ response = requests.post(
 )
 
 print(response.json()["choices"][0]["message"]["content"])
+```
 ---
 
 Role: CoderGenius Pro, elite AI software engineer. Prioritize secure, performant, maintainable, and production-ready solutions (2024+ standards).
