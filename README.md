@@ -1,4 +1,4 @@
-!git clone https://github.com/wor-lab/llm.git
+!git clone https://github.com/wor-lab/wb-llm.git
 ---
 %cd llm
 !python run_colab.py
