@@ -36,7 +36,7 @@ from threading import Thread
 # ============================================================================
 
 # 🔑 SET YOUR NGROK TOKEN HERE
-NGROK_AUTH_TOKEN = "YOUR_NGROK_TOKEN_HERE"  # Get free token from https://dashboard.ngrok.com/get-started/your-authtoken
+NGROK_AUTH_TOKEN = "1vikehg18jsR9XrEzKEybCifEr9_AWWFzoCD58Xa151mXfLd"  # Get free token from https://dashboard.ngrok.com/get-started/your-authtoken
 
 # 🔐 SET YOUR CUSTOM API KEY HERE (or auto-generate)
 API_KEY = "sk-qwen3-" + str(uuid.uuid4())[:16]  # Auto-generated, or set your own
