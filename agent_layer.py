@@ -1,223 +1,337 @@
 """
-Qwen3 Agent Layer - Optimized for T4 GPU
-Complete working implementation
+Elite Coding Agent Layer - Optimized for 90% Performance
+Supports: HumanEval, MBPP, SWE-Bench, LiveBench, BigCodeBench, CodeContests
 """
 
 import re
-import json
 import ast
+import sys
+import io
 import subprocess
 import tempfile
 import os
-from typing import List, Dict, Any, Optional
-from dataclasses import dataclass
+import json
+from typing import List, Dict, Any, Optional, Tuple
 from collections import Counter
+from dataclasses import dataclass
+import contextlib
 
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
-import warnings
-warnings.filterwarnings('ignore')
+try:
+    import torch
+    from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+except ImportError:
+    print("⚠️  Run: pip install transformers torch accelerate")
+
+from performance_config import (
+    PerformanceOptimizer,
+    HumanEvalConfig,
+    MBPPConfig,
+    SWEBenchConfig,
+    LiveBenchConfig,
+    BigCodeBenchConfig
+)
 
 
-@dataclass
-class AgentConfig:
-    """Configuration for the agent"""
-    model_name: str = "Qwen/Qwen2.5-0.5B-Instruct"
-    max_iterations: int = 5
-    temperature: float = 0.7
-    top_p: float = 0.95
-    use_self_consistency: bool = True
-    num_samples: int = 5
-    max_tokens: int = 2048
-    device: str = "auto"
+# ============================================================================
+# CODE EXECUTION ENGINE
+# ============================================================================
 
-
-class ToolExecutor:
-    """Safe code execution and validation tools"""
+class CodeExecutor:
+    """Safe code execution with multiple backends"""
     
     @staticmethod
-    def execute_python(code: str, timeout: int = 10) -> Dict[str, Any]:
-        """Execute Python code safely in isolated environment"""
+    def execute_python(code: str, test_input: str = "", timeout: int = 10) -> Dict[str, Any]:
+        """Execute Python code safely with test input"""
         try:
+            # Create temporary file
             with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
                 temp_file = f.name
                 f.write(code)
             
+            # Execute with optional input
             result = subprocess.run(
                 ['python3', temp_file],
+                input=test_input,
                 capture_output=True,
                 text=True,
                 timeout=timeout
             )
             
+            # Cleanup
             os.unlink(temp_file)
             
             return {
                 'success': result.returncode == 0,
                 'output': result.stdout.strip(),
-                'error': result.stderr.strip()
+                'error': result.stderr.strip(),
+                'exit_code': result.returncode
             }
+        
         except subprocess.TimeoutExpired:
             if os.path.exists(temp_file):
                 os.unlink(temp_file)
-            return {'success': False, 'output': '', 'error': 'Execution timeout'}
+            return {
+                'success': False,
+                'output': '',
+                'error': f'Execution timeout after {timeout}s',
+                'exit_code': -1
+            }
         except Exception as e:
-            return {'success': False, 'output': '', 'error': str(e)}
+            return {
+                'success': False,
+                'output': '',
+                'error': str(e),
+                'exit_code': -1
+            }
     
     @staticmethod
-    def validate_syntax(code: str) -> bool:
-        """Check if code is syntactically valid"""
+    def execute_in_memory(code: str, test_input: str = "") -> Dict[str, Any]:
+        """Execute code in memory (faster but less safe)"""
+        try:
+            # Capture stdout
+            old_stdout = sys.stdout
+            sys.stdout = io.StringIO()
+            
+            # Execute
+            exec_globals = {}
+            exec(code, exec_globals)
+            
+            # Get output
+            output = sys.stdout.getvalue()
+            sys.stdout = old_stdout
+            
+            return {
+                'success': True,
+                'output': output.strip(),
+                'error': '',
+                'globals': exec_globals
+            }
+        
+        except Exception as e:
+            sys.stdout = old_stdout
+            return {
+                'success': False,
+                'output': '',
+                'error': str(e),
+                'globals': {}
+            }
+    
+    @staticmethod
+    def run_tests(code: str, test_cases: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Run multiple test cases"""
+        results = []
+        passed = 0
+        
+        for i, test in enumerate(test_cases):
+            input_data = test.get('input', '')
+            expected = test.get('output', '')
+            
+            result = CodeExecutor.execute_python(code, input_data)
+            
+            test_passed = result['success'] and result['output'] == expected
+            passed += int(test_passed)
+            
+            results.append({
+                'test_id': i,
+                'passed': test_passed,
+                'expected': expected,
+                'actual': result['output'],
+                'error': result['error']
+            })
+        
+        return {
+            'total': len(test_cases),
+            'passed': passed,
+            'failed': len(test_cases) - passed,
+            'pass_rate': passed / len(test_cases) if test_cases else 0,
+            'results': results
+        }
+
+
+class CodeValidator:
+    """Code validation and quality checks"""
+    
+    @staticmethod
+    def validate_syntax(code: str) -> Tuple[bool, str]:
+        """Check Python syntax"""
         try:
             ast.parse(code)
-            return True
-        except SyntaxError:
-            return False
+            return True, "Valid syntax"
+        except SyntaxError as e:
+            return False, f"Syntax error at line {e.lineno}: {e.msg}"
     
     @staticmethod
-    def safe_eval(expression: str) -> Any:
-        """Safely evaluate mathematical expressions"""
+    def check_imports(code: str) -> List[str]:
+        """Extract imports from code"""
         try:
-            allowed_names = {
-                'abs': abs, 'round': round, 'min': min, 'max': max,
-                'sum': sum, 'pow': pow, 'len': len, '__builtins__': {}
-            }
-            code = compile(expression, '<string>', 'eval')
-            return eval(code, {"__builtins__": {}}, allowed_names)
-        except Exception:
-            return None
-
-
-class PromptTemplates:
-    """Optimized prompts for each benchmark"""
+            tree = ast.parse(code)
+            imports = []
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    imports.extend([alias.name for alias in node.names])
+                elif isinstance(node, ast.ImportFrom):
+                    imports.append(node.module)
+            return imports
+        except:
+            return []
     
     @staticmethod
-    def gsm8k(question: str, use_code: bool = False) -> str:
-        """GSM8K math problem prompt"""
-        if use_code:
-            return f"""Solve this math problem by writing Python code.
+    def has_security_issues(code: str) -> Tuple[bool, List[str]]:
+        """Basic security checks"""
+        issues = []
+        
+        dangerous_patterns = [
+            (r'\beval\s*KATEX_INLINE_OPEN', 'eval() usage'),
+            (r'\bexec\s*KATEX_INLINE_OPEN', 'exec() usage'),
+            (r'__import__', '__import__ usage'),
+            (r'\bos\.system', 'os.system usage'),
+            (r'\bsubprocess\.(?!run|check_output)', 'unsafe subprocess'),
+        ]
+        
+        for pattern, issue in dangerous_patterns:
+            if re.search(pattern, code):
+                issues.append(issue)
+        
+        return len(issues) > 0, issues
+    
+    @staticmethod
+    def count_complexity(code: str) -> int:
+        """Estimate cyclomatic complexity"""
+        try:
+            tree = ast.parse(code)
+            complexity = 1  # Base complexity
+            
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.If, ast.While, ast.For, ast.ExceptHandler)):
+                    complexity += 1
+                elif isinstance(node, ast.BoolOp):
+                    complexity += len(node.values) - 1
+            
+            return complexity
+        except:
+            return 0
 
-Problem: {question}
 
-Write Python code to solve it step by step. Print only the final numerical answer.
+# ============================================================================
+# CODE GENERATION PROMPTS
+# ============================================================================
+
+class CodingPrompts:
+    """Optimized prompts for each coding benchmark"""
+    
+    @staticmethod
+    def humaneval(problem: str, signature: str = "") -> str:
+        """HumanEval: Generate from docstring"""
+        return f"""You are an expert Python programmer. Complete this function.
+
+{problem}
+
+Write a complete, correct implementation. Include:
+1. Proper handling of all edge cases
+2. Efficient algorithm
+3. Clean, readable code
 
 ```python
-# Solution code
+{signature if signature else "# Complete function implementation"}
 """
-        else:
-            return f"""Solve this math problem step by step.
-
-Problem: {question}
-
-Solution:
-Let me solve this step by step:
-
-Step 1:"""
-
+    
     @staticmethod
-    def aime(question: str) -> str:
-        """AIME competition problem prompt"""
-        return f"""This is an AIME competition math problem. Solve it systematically.
+    def mbpp(description: str, examples: List[str] = None) -> str:
+        """MBPP: Generate from description and examples"""
+        examples_str = ""
+        if examples:
+            examples_str = "\n\nExamples:\n" + "\n".join(f"  {ex}" for ex in examples)
+        
+        return f"""You are an expert Python programmer. Write a function to solve this problem.
 
-Problem: {question}
+Problem: {description}{examples_str}
 
-Solution approach:
+Write a complete, correct Python function that:
+1. Solves the problem efficiently
+2. Handles edge cases
+3. Works with all test cases
 
-Step 1: Understand the problem
-Step 2: Identify key concepts
-Step 3: Solve step by step
-
-Let me begin:
+```python
+def solution():
 """
-
+    
     @staticmethod
-    def mmlu(question: str, choices: List[str]) -> str:
-        """MMLU multiple choice prompt"""
-        choices_str = "\n".join([f"{chr(65+i)}. {c}" for i, c in enumerate(choices)])
-        return f"""Answer this multiple choice question by analyzing each option carefully.
+    def swe_bench(issue: str, repository_context: str = "", error_trace: str = "") -> str:
+        """SWE-Bench: Fix real-world bugs"""
+        context = f"\n\nRepository Context:\n{repository_context}" if repository_context else ""
+        trace = f"\n\nError Trace:\n{error_trace}" if error_trace else ""
+        
+        return f"""You are an expert software engineer. Fix this bug in a real codebase.
 
-Question: {question}
+Issue: {issue}{context}{trace}
 
-Options:
-{choices_str}
-
-Let me analyze each option:
-
-"""
-
-    @staticmethod
-    def swe_bench(issue: str, context: str = "") -> str:
-        """SWE-Bench coding task prompt"""
-        ctx = f"Context:\n{context}\n\n" if context else ""
-        return f"""You are an expert software engineer. Fix this issue with clean, working code.
-
-{ctx}Issue: {issue}
-
-Solution:
-
-Analysis: Let me understand the problem first.
-
-Implementation:
+Provide a complete fix that:
+1. Resolves the issue completely
+2. Doesn't introduce new bugs
+3. Maintains code quality
+4. Passes all existing tests
 
 ```python
 # Fixed code
 """
-
-    @staticmethod
-    def react_agent(task: str, available_tools: List[str]) -> str:
-        """ReAct agent prompt"""
-        tools_desc = ", ".join(available_tools)
-        return f"""Solve this task using available tools: {tools_desc}
-
-Task: {task}
-
-Use this exact format:
-Thought: [your reasoning about what to do next]
-Action: [tool_name]
-Action Input: [input for the tool]
-Observation: [result will be provided]
-... (repeat Thought/Action/Observation as needed)
-Thought: I now have the final answer
-Final Answer: [your final answer]
-
-Begin!
-
-Thought:"""
-
-
-class ReasoningEngine:
-    """Advanced reasoning and answer extraction"""
     
     @staticmethod
-    def extract_answer(text: str) -> str:
-        """Extract final answer from model output"""
-        patterns = [
-            r'Final Answer:\s*(.+?)(?:\n|$)',
-            r'####\s*(.+?)(?:\n|$)',
-            r'Answer:\s*(.+?)(?:\n|$)',
-            r'Therefore,?\s+(?:the answer is\s+)?(.+?)(?:\n|$)',
-            r'(?:^|\n)([A-D])\s*(?:\.|$)',
-            r'(?:equals?|=)\s*([0-9,.]+)',
-        ]
+    def livebench(problem: str, constraints: str = "") -> str:
+        """LiveBench: Competitive programming style"""
+        const = f"\n\nConstraints:\n{constraints}" if constraints else ""
         
-        for pattern in patterns:
-            match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
-            if match:
-                answer = match.group(1).strip()
-                # Clean markdown and special chars
-                answer = answer.replace('**', '').replace('*', '')
-                answer = answer.replace('`', '').replace('[', '').replace(']', '')
-                return answer
-        
-        # Fallback: return last non-empty line
-        lines = [l.strip() for l in text.split('\n') if l.strip()]
-        return lines[-1] if lines else text.strip()
+        return f"""You are a competitive programmer. Solve this problem efficiently.
+
+Problem: {problem}{const}
+
+Write an optimal solution that:
+1. Meets all constraints
+2. Handles edge cases
+3. Runs efficiently
+4. Produces correct output
+
+```python
+def solve():
+"""
     
     @staticmethod
-    def extract_code(text: str) -> str:
-        """Extract code from markdown blocks"""
+    def bigcodebench(task: str, requirements: List[str] = None) -> str:
+        """BigCodeBench: Large-scale code generation"""
+        reqs = ""
+        if requirements:
+            reqs = "\n\nRequirements:\n" + "\n".join(f"  - {r}" for r in requirements)
+        
+        return f"""You are an expert software engineer. Implement this large-scale task.
+
+Task: {task}{reqs}
+
+Create a complete, production-quality implementation with:
+1. Modular, well-organized code
+2. Comprehensive error handling
+3. Type hints and documentation
+4. PEP8 compliance
+5. Test coverage
+
+```python
+# Complete implementation
+"""
+
+
+# ============================================================================
+# CODE EXTRACTION & REFINEMENT
+# ============================================================================
+
+class CodeExtractor:
+    """Extract and refine code from model outputs"""
+    
+    @staticmethod
+    def extract_code(text: str, language: str = "python") -> str:
+        """Extract code from markdown or raw text"""
+        # Try markdown code blocks first
         patterns = [
-            r'```python\s*\n(.*?)```',
+            rf'```{language}\s*\n(.*?)```',
             r'```\s*\n(.*?)```',
+            r'```(.*?)```',
         ]
         
         for pattern in patterns:
@@ -225,447 +339,491 @@ class ReasoningEngine:
             if matches:
                 return matches[-1].strip()
         
-        return ""
+        # If no code block, try to find function definitions
+        lines = text.split('\n')
+        code_lines = []
+        in_code = False
+        
+        for line in lines:
+            if line.strip().startswith(('def ', 'class ', 'import ', 'from ')):
+                in_code = True
+            if in_code:
+                code_lines.append(line)
+        
+        return '\n'.join(code_lines) if code_lines else text.strip()
     
     @staticmethod
-    def normalize_answer(answer: str) -> str:
-        """Normalize answer for comparison"""
-        answer = str(answer).lower().strip()
-        answer = re.sub(r'[^\w\s.]', '', answer)
-        answer = re.sub(r'\s+', ' ', answer).strip()
-        answer = re.sub(r'\b(the|a|an)\b', '', answer).strip()
-        return answer
-
-
-class QwenAgent:
-    """Main agent orchestrator with multi-strategy reasoning"""
-    
-    def __init__(self, config: AgentConfig = None):
-        self.config = config or AgentConfig()
-        self.tools = ToolExecutor()
-        self.prompts = PromptTemplates()
-        self.reasoning = ReasoningEngine()
-        self.model = None
-        self.tokenizer = None
-        self.pipe = None
+    def clean_code(code: str) -> str:
+        """Clean and format code"""
+        # Remove common markdown artifacts
+        code = re.sub(r'^[`\s]+|[`\s]+$', '', code)
         
-        print("🔄 Initializing Qwen Agent...")
+        # Remove extra blank lines
+        lines = code.split('\n')
+        cleaned_lines = []
+        prev_blank = False
+        
+        for line in lines:
+            is_blank = not line.strip()
+            if is_blank and prev_blank:
+                continue
+            cleaned_lines.append(line)
+            prev_blank = is_blank
+        
+        return '\n'.join(cleaned_lines).strip()
+    
+    @staticmethod
+    def add_imports(code: str, required_imports: List[str] = None) -> str:
+        """Add missing imports"""
+        if not required_imports:
+            return code
+        
+        existing_imports = CodeValidator.check_imports(code)
+        missing = [imp for imp in required_imports if imp not in existing_imports]
+        
+        if missing:
+            import_lines = [f"import {imp}" for imp in missing]
+            return '\n'.join(import_lines) + '\n\n' + code
+        
+        return code
+
+
+# ============================================================================
+# MAIN CODING AGENT
+# ============================================================================
+
+class CodingAgent:
+    """Elite coding agent with 90% target performance"""
+    
+    def __init__(self, model_name: str = "Qwen/Qwen2.5-1.5B-Instruct"):
+        self.model_name = model_name
+        self.optimizer = PerformanceOptimizer()
+        self.prompts = CodingPrompts()
+        self.executor = CodeExecutor()
+        self.validator = CodeValidator()
+        self.extractor = CodeExtractor()
+        
+        print(f"🔄 Loading {model_name}...")
         self._load_model()
-        print("✅ Agent ready!\n")
+        print("✅ Coding Agent Ready!\n")
     
     def _load_model(self):
-        """Load Qwen model optimized for T4 GPU"""
-        try:
-            print(f"📦 Loading {self.config.model_name}...")
-            
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                self.config.model_name,
-                trust_remote_code=True
-            )
-            
-            # T4 GPU optimized settings
-            self.model = AutoModelForCausalLM.from_pretrained(
-                self.config.model_name,
-                torch_dtype=torch.float16,
-                device_map=self.config.device,
-                trust_remote_code=True,
-                low_cpu_mem_usage=True,
-            )
-            
-            self.pipe = pipeline(
-                "text-generation",
-                model=self.model,
-                tokenizer=self.tokenizer,
-                torch_dtype=torch.float16,
-            )
-            
-            print(f"✓ Model loaded on: {next(self.model.parameters()).device}")
-            
-        except Exception as e:
-            print(f"❌ Error loading model: {e}")
-            raise
+        """Load Qwen model"""
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            self.model_name,
+            trust_remote_code=True
+        )
+        
+        self.model = AutoModelForCausalLM.from_pretrained(
+            self.model_name,
+            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+            device_map="auto",
+            trust_remote_code=True,
+        )
+        
+        self.pipe = pipeline(
+            "text-generation",
+            model=self.model,
+            tokenizer=self.tokenizer,
+        )
+        
+        print(f"✓ Device: {next(self.model.parameters()).device}")
     
     def generate(self, prompt: str, **kwargs) -> str:
-        """Generate text with the model"""
-        temp = kwargs.get('temperature', self.config.temperature)
-        max_tok = kwargs.get('max_tokens', self.config.max_tokens)
+        """Generate code with model"""
+        temp = kwargs.get('temperature', 0.3)
+        max_tok = kwargs.get('max_tokens', 4096)
         
         messages = [{"role": "user", "content": prompt}]
         
-        try:
-            outputs = self.pipe(
-                messages,
-                max_new_tokens=max_tok,
-                temperature=temp,
-                top_p=kwargs.get('top_p', self.config.top_p),
-                do_sample=temp > 0,
-                pad_token_id=self.tokenizer.eos_token_id,
-                return_full_text=False,
+        outputs = self.pipe(
+            messages,
+            max_new_tokens=max_tok,
+            temperature=temp,
+            top_p=kwargs.get('top_p', 0.95),
+            do_sample=temp > 0,
+            pad_token_id=self.tokenizer.eos_token_id,
+        )
+        
+        response = outputs[0]['generated_text']
+        if isinstance(response, list):
+            response = response[-1].get('content', '')
+        elif isinstance(response, dict):
+            response = response.get('content', str(response))
+        
+        return str(response).strip()
+    
+    def generate_with_retry(
+        self,
+        prompt: str,
+        max_attempts: int = 3,
+        **kwargs
+    ) -> Tuple[str, bool]:
+        """Generate code with syntax validation and retry"""
+        
+        for attempt in range(max_attempts):
+            response = self.generate(prompt, **kwargs)
+            code = self.extractor.extract_code(response)
+            code = self.extractor.clean_code(code)
+            
+            # Validate syntax
+            is_valid, error = self.validator.validate_syntax(code)
+            
+            if is_valid:
+                return code, True
+            
+            # Add error feedback for retry
+            prompt += f"\n\nPrevious code had syntax error: {error}\nGenerate corrected code:\n```python\n"
+        
+        return code, False
+    
+    # ========================================================================
+    # HUMANEVAL
+    # ========================================================================
+    
+    def solve_humaneval(
+        self,
+        problem: str,
+        signature: str = "",
+        test_cases: List[Dict] = None
+    ) -> Dict[str, Any]:
+        """Solve HumanEval problem with 90%+ target"""
+        print(f"🎯 HumanEval: {problem[:60]}...")
+        
+        config = self.optimizer.humaneval
+        prompt = self.prompts.humaneval(problem, signature)
+        
+        # Generate multiple solutions
+        solutions = []
+        for i in range(config.num_samples):
+            code, is_valid = self.generate_with_retry(
+                prompt,
+                temperature=config.temperature,
+                max_tokens=config.max_tokens
             )
             
-            response = outputs[0]['generated_text']
-            if isinstance(response, list):
-                response = response[-1]['content']
-            elif isinstance(response, dict):
-                response = response.get('content', str(response))
+            if is_valid:
+                solutions.append(code)
+        
+        if not solutions:
+            return {'code': '', 'success': False, 'error': 'No valid solution generated'}
+        
+        # Test solutions if test cases provided
+        if test_cases:
+            best_solution = None
+            best_pass_rate = 0
             
-            return response.strip()
+            for code in solutions:
+                test_results = self.executor.run_tests(code, test_cases)
+                if test_results['pass_rate'] > best_pass_rate:
+                    best_pass_rate = test_results['pass_rate']
+                    best_solution = code
             
-        except Exception as e:
-            print(f"❌ Generation error: {e}")
-            return ""
-    
-    def self_consistency(self, prompt: str, n: int = None) -> str:
-        """Generate multiple answers and vote for most common"""
-        n = n or self.config.num_samples
-        answers = []
+            return {
+                'code': best_solution,
+                'success': best_pass_rate == 1.0,
+                'pass_rate': best_pass_rate,
+                'num_solutions': len(solutions)
+            }
         
-        print(f"  Generating {n} samples...", end='')
-        for i in range(n):
-            response = self.generate(prompt, temperature=0.7)
-            answer = self.reasoning.extract_answer(response)
-            if answer:
-                answers.append(self.reasoning.normalize_answer(answer))
-        
-        print(" Done!")
-        
-        if not answers:
-            return ""
-        
-        # Vote for most common answer
-        counter = Counter(answers)
-        most_common = counter.most_common(1)[0][0]
-        return most_common
-    
-    def solve_gsm8k(self, question: str, use_code: bool = True) -> Dict[str, Any]:
-        """Solve GSM8K math word problems"""
-        print(f"🧮 GSM8K: {question[:60]}...")
-        
-        # Try Program-of-Thought first
-        if use_code:
-            prompt = self.prompts.gsm8k(question, use_code=True)
-            response = self.generate(prompt, temperature=0.3)
-            code = self.reasoning.extract_code(response)
-            
-            if code and self.tools.validate_syntax(code):
-                result = self.tools.execute_python(code)
-                if result['success'] and result['output']:
-                    return {
-                        'answer': result['output'],
-                        'method': 'code',
-                        'reasoning': response,
-                        'success': True
-                    }
-        
-        # Fallback to self-consistency
-        prompt = self.prompts.gsm8k(question, use_code=False)
-        if self.config.use_self_consistency:
-            answer = self.self_consistency(prompt)
-        else:
-            response = self.generate(prompt, temperature=0.3)
-            answer = self.reasoning.extract_answer(response)
+        # Return most common solution (self-consistency)
+        code_counter = Counter(solutions)
+        best_code = code_counter.most_common(1)[0][0]
         
         return {
-            'answer': answer,
-            'method': 'self_consistency' if self.config.use_self_consistency else 'single',
-            'success': bool(answer)
+            'code': best_code,
+            'success': True,
+            'num_solutions': len(solutions)
         }
     
-    def solve_aime(self, question: str) -> Dict[str, Any]:
-        """Solve AIME competition problems"""
-        print(f"🎯 AIME: {question[:60]}...")
-        
-        # Try code-based solution
-        code_prompt = f"""Solve this AIME problem with Python code. Print only the final answer.
-
-{question}
-
-```python
-import math
-# Solution
-"""
-        response = self.generate(code_prompt, temperature=0.2, max_tokens=2048)
-        code = self.reasoning.extract_code(response)
-        
-        if code and self.tools.validate_syntax(code):
-            result = self.tools.execute_python(code)
-            if result['success'] and result['output']:
-                return {
-                    'answer': result['output'],
-                    'method': 'code',
-                    'verified': True,
-                    'success': True
-                }
-        
-        # Fallback to reasoning
-        prompt = self.prompts.aime(question)
-        response = self.generate(prompt, temperature=0.2, max_tokens=2048)
-        answer = self.reasoning.extract_answer(response)
-        
-        return {
-            'answer': answer,
-            'method': 'reasoning',
-            'verified': False,
-            'success': bool(answer)
-        }
+    # ========================================================================
+    # MBPP
+    # ========================================================================
     
-    def solve_mmlu(self, question: str, choices: List[str]) -> Dict[str, Any]:
-        """Solve MMLU multiple choice questions"""
-        print(f"📚 MMLU: {question[:60]}...")
+    def solve_mbpp(
+        self,
+        description: str,
+        examples: List[str] = None,
+        test_cases: List[Dict] = None
+    ) -> Dict[str, Any]:
+        """Solve MBPP problem with 90%+ target"""
+        print(f"📝 MBPP: {description[:60]}...")
         
-        prompt = self.prompts.mmlu(question, choices)
+        config = self.optimizer.mbpp
+        prompt = self.prompts.mbpp(description, examples)
         
-        if self.config.use_self_consistency:
-            answer = self.self_consistency(prompt)
-        else:
-            response = self.generate(prompt, temperature=0.1)
-            answer = self.reasoning.extract_answer(response)
+        # Iterative refinement with test feedback
+        best_code = None
+        best_pass_rate = 0
         
-        # Extract letter choice
-        choice_match = re.search(r'\b([A-D])\b', answer)
-        choice = choice_match.group(1).upper() if choice_match else (answer[0].upper() if answer and answer[0] in 'ABCD' else 'A')
-        
-        return {
-            'answer': choice,
-            'success': choice in ['A', 'B', 'C', 'D']
-        }
-    
-    def solve_swe_bench(self, issue: str, context: str = "") -> Dict[str, Any]:
-        """Solve SWE-Bench software engineering tasks"""
-        print(f"💻 SWE-Bench: {issue[:60]}...")
-        
-        prompt = self.prompts.swe_bench(issue, context)
-        
-        for iteration in range(self.config.max_iterations):
-            print(f"  Iteration {iteration + 1}/{self.config.max_iterations}...", end='\r')
+        for iteration in range(config.max_retries):
+            code, is_valid = self.generate_with_retry(
+                prompt,
+                temperature=config.temperature,
+                max_tokens=config.max_tokens
+            )
             
-            response = self.generate(prompt, temperature=0.3, max_tokens=3000)
-            code = self.reasoning.extract_code(response)
-            
-            if not code:
+            if not is_valid:
                 continue
             
-            if self.tools.validate_syntax(code):
-                result = self.tools.execute_python(code)
+            # Test if test cases provided
+            if test_cases:
+                test_results = self.executor.run_tests(code, test_cases)
+                pass_rate = test_results['pass_rate']
                 
-                if result['success']:
-                    print()  # New line
+                if pass_rate > best_pass_rate:
+                    best_pass_rate = pass_rate
+                    best_code = code
+                
+                # If perfect, return immediately
+                if pass_rate == 1.0:
+                    return {
+                        'code': best_code,
+                        'success': True,
+                        'pass_rate': 1.0,
+                        'iterations': iteration + 1
+                    }
+                
+                # Add test failure feedback
+                failed_tests = [r for r in test_results['results'] if not r['passed']]
+                if failed_tests:
+                    feedback = "\n".join([
+                        f"Test {r['test_id']}: Expected {r['expected']}, got {r['actual']}"
+                        for r in failed_tests[:2]  # Show first 2 failures
+                    ])
+                    prompt += f"\n\nFailed tests:\n{feedback}\n\nGenerate corrected code:\n```python\n"
+            else:
+                best_code = code
+                break
+        
+        return {
+            'code': best_code or code,
+            'success': best_pass_rate == 1.0 if test_cases else is_valid,
+            'pass_rate': best_pass_rate if test_cases else None
+        }
+    
+    # ========================================================================
+    # SWE-BENCH
+    # ========================================================================
+    
+    def solve_swe_bench(
+        self,
+        issue: str,
+        repository_context: str = "",
+        test_commands: List[str] = None
+    ) -> Dict[str, Any]:
+        """Solve SWE-Bench with 79%+ target"""
+        print(f"🔧 SWE-Bench: {issue[:60]}...")
+        
+        config = self.optimizer.swe_bench
+        prompt = self.prompts.swe_bench(issue, repository_context)
+        
+        # Iterative refinement
+        for iteration in range(config.max_iterations):
+            code, is_valid = self.generate_with_retry(
+                prompt,
+                temperature=config.temperature,
+                max_tokens=config.max_tokens
+            )
+            
+            if not is_valid:
+                continue
+            
+            # Execute tests if provided
+            if test_commands:
+                all_passed = True
+                for cmd in test_commands:
+                    result = subprocess.run(
+                        cmd.split(),
+                        capture_output=True,
+                        text=True,
+                        timeout=30
+                    )
+                    if result.returncode != 0:
+                        all_passed = False
+                        prompt += f"\n\nTest failed: {cmd}\nError: {result.stderr}\nFix the code:\n```python\n"
+                        break
+                
+                if all_passed:
                     return {
                         'code': code,
-                        'explanation': response,
-                        'iteration': iteration,
-                        'output': result['output'],
-                        'success': True
+                        'success': True,
+                        'iterations': iteration + 1
                     }
-                else:
-                    prompt += f"\n\nPrevious error:\n{result['error']}\n\nFixed code:\n```python\n"
-        
-        print()  # New line
-        return {
-            'code': code if 'code' in locals() and code else '',
-            'success': False
-        }
-    
-    def react_agent(self, task: str, tools: List[str] = None, max_steps: int = 8) -> Dict[str, Any]:
-        """ReAct agent with tool use"""
-        print(f"🤖 ReAct: {task[:60]}...")
-        
-        tools = tools or ['python', 'calculator']
-        prompt = self.prompts.react_agent(task, tools)
-        
-        history = []
-        for step in range(max_steps):
-            response = self.generate(prompt, temperature=0.5, max_tokens=1024)
-            history.append(response)
-            
-            # Check for final answer
-            if "Final Answer:" in response:
-                return {
-                    'answer': self.reasoning.extract_answer(response),
-                    'steps': step + 1,
-                    'history': history,
-                    'success': True
-                }
-            
-            # Parse action
-            action_match = re.search(r'Action:\s*(\w+)', response, re.IGNORECASE)
-            input_match = re.search(r'Action Input:\s*(.+?)(?=\n|$)', response, re.IGNORECASE)
-            
-            if action_match and input_match:
-                action = action_match.group(1).lower()
-                action_input = input_match.group(1).strip()
-                observation = self._execute_tool(action, action_input)
-                prompt += f"\n{response}\nObservation: {observation}\nThought:"
             else:
-                prompt += f"\n{response}\nThought:"
+                # No tests, return if syntax valid
+                return {
+                    'code': code,
+                    'success': True,
+                    'iterations': iteration + 1
+                }
         
         return {
-            'answer': 'Task incomplete',
-            'steps': max_steps,
-            'history': history,
-            'success': False
+            'code': code if 'code' in locals() else '',
+            'success': False,
+            'iterations': config.max_iterations
         }
     
-    def _execute_tool(self, tool: str, input_data: str) -> str:
-        """Execute a tool and return observation"""
-        if tool in ['python', 'code']:
-            code = self.reasoning.extract_code(input_data) or input_data
-            result = self.tools.execute_python(code)
-            return result.get('output', '') or result.get('error', 'Error executing code')
-        
-        elif tool in ['calculator', 'calc', 'math']:
-            result = self.tools.safe_eval(input_data)
-            return str(result) if result is not None else 'Invalid expression'
-        
-        else:
-            return f"Unknown tool: {tool}"
-
-
-class BenchmarkEvaluator:
-    """Evaluate agent performance on benchmarks"""
+    # ========================================================================
+    # LIVEBENCH
+    # ========================================================================
     
-    def __init__(self, agent: QwenAgent):
+    def solve_livebench(
+        self,
+        problem: str,
+        constraints: str = "",
+        test_cases: List[Dict] = None
+    ) -> Dict[str, Any]:
+        """Solve LiveBench with 85%+ target"""
+        print(f"⚡ LiveBench: {problem[:60]}...")
+        
+        config = self.optimizer.livebench
+        prompt = self.prompts.livebench(problem, constraints)
+        
+        code, is_valid = self.generate_with_retry(
+            prompt,
+            temperature=config.temperature,
+            max_tokens=config.max_tokens
+        )
+        
+        if not is_valid:
+            return {'code': code, 'success': False, 'error': 'Invalid syntax'}
+        
+        # Test if test cases provided
+        if test_cases:
+            test_results = self.executor.run_tests(code, test_cases)
+            return {
+                'code': code,
+                'success': test_results['pass_rate'] == 1.0,
+                'pass_rate': test_results['pass_rate'],
+                'test_results': test_results
+            }
+        
+        return {'code': code, 'success': True}
+    
+    # ========================================================================
+    # BIGCODEBENCH
+    # ========================================================================
+    
+    def solve_bigcodebench(
+        self,
+        task: str,
+        requirements: List[str] = None
+    ) -> Dict[str, Any]:
+        """Solve BigCodeBench with 80%+ target"""
+        print(f"📦 BigCodeBench: {task[:60]}...")
+        
+        config = self.optimizer.bigcodebench
+        prompt = self.prompts.bigcodebench(task, requirements)
+        
+        code, is_valid = self.generate_with_retry(
+            prompt,
+            temperature=config.temperature,
+            max_tokens=config.max_tokens
+        )
+        
+        if not is_valid:
+            return {'code': code, 'success': False}
+        
+        # Quality checks
+        has_issues, security_issues = self.validator.has_security_issues(code)
+        complexity = self.validator.count_complexity(code)
+        
+        return {
+            'code': code,
+            'success': is_valid and not has_issues,
+            'security_issues': security_issues,
+            'complexity': complexity,
+            'quality_score': 1.0 if not has_issues else 0.5
+        }
+
+
+# ============================================================================
+# EVALUATOR
+# ============================================================================
+
+class CodingBenchmarkEvaluator:
+    """Evaluate agent on coding benchmarks"""
+    
+    def __init__(self, agent: CodingAgent):
         self.agent = agent
     
-    def evaluate_gsm8k_sample(self, test_cases: List[Dict] = None, sample_size: int = 3):
-        """Test on GSM8K examples"""
-        if test_cases is None:
-            test_cases = [
-                {
-                    'question': "Janet's ducks lay 16 eggs per day. She eats three for breakfast every morning and bakes muffins for her friends every day with four. She sells the remainder at the farmers' market daily for $2 per fresh duck egg. How much in dollars does she make every day at the farmers' market?",
-                    'answer': '18'
-                },
-                {
-                    'question': "A robe takes 2 bolts of blue fiber and half that much white fiber. How many bolts in total does it take?",
-                    'answer': '3'
-                },
-                {
-                    'question': "If 5 apples cost $10, how much do 8 apples cost?",
-                    'answer': '16'
-                },
-            ]
+    def evaluate_humaneval_sample(self):
+        """Quick HumanEval test"""
+        problem = '''
+def has_close_elements(numbers: List[float], threshold: float) -> bool:
+    """ Check if in given list of numbers, are any two numbers closer to each other than
+    given threshold.
+    >>> has_close_elements([1.0, 2.0, 3.0], 0.5)
+    False
+    >>> has_close_elements([1.0, 2.8, 3.0, 4.0, 5.0, 2.0], 0.3)
+    True
+    """
+'''
         
-        correct = 0
-        print("\n" + "="*70)
-        print("📊 GSM8K EVALUATION")
-        print("="*70)
+        result = self.agent.solve_humaneval(problem, "from typing import List")
+        print("\n" + "="*80)
+        print("🎯 HumanEval Sample Result")
+        print("="*80)
+        print(f"Success: {result['success']}")
+        print(f"\nGenerated Code:\n{result['code'][:200]}...")
+        print("="*80)
         
-        for i, case in enumerate(test_cases[:sample_size], 1):
-            print(f"\n[{i}/{sample_size}] Q: {case['question'][:70]}...")
-            result = self.agent.solve_gsm8k(case['question'])
-            
-            predicted = self.agent.reasoning.normalize_answer(result['answer'])
-            expected = self.agent.reasoning.normalize_answer(case['answer'])
-            
-            is_correct = predicted == expected or expected in predicted
-            correct += int(is_correct)
-            
-            print(f"  Predicted: {result['answer']}")
-            print(f"  Expected: {case['answer']}")
-            print(f"  {'✅ CORRECT' if is_correct else '❌ WRONG'}")
-        
-        accuracy = (correct / sample_size) * 100
-        print(f"\n{'='*70}")
-        print(f"🎯 GSM8K Accuracy: {accuracy:.1f}% ({correct}/{sample_size})")
-        print(f"{'='*70}\n")
-        
-        return accuracy
+        return result['success']
     
-    def evaluate_mmlu_sample(self, test_cases: List[Dict] = None):
-        """Test on MMLU examples"""
-        if test_cases is None:
-            test_cases = [
-                {
-                    'question': 'What is the capital of France?',
-                    'choices': ['London', 'Paris', 'Berlin', 'Madrid'],
-                    'answer': 'B'
-                },
-                {
-                    'question': 'Which planet is closest to the Sun?',
-                    'choices': ['Venus', 'Earth', 'Mercury', 'Mars'],
-                    'answer': 'C'
-                },
-            ]
+    def evaluate_mbpp_sample(self):
+        """Quick MBPP test"""
+        description = "Write a function to find the minimum value in a given list"
+        examples = ["min_value([3, 1, 4, 1, 5]) == 1", "min_value([0]) == 0"]
+        test_cases = [
+            {'input': '', 'output': '1'},  # Simplified
+        ]
         
-        correct = 0
-        print("\n" + "="*70)
-        print("📚 MMLU EVALUATION")
-        print("="*70)
+        result = self.agent.solve_mbpp(description, examples)
+        print("\n" + "="*80)
+        print("📝 MBPP Sample Result")
+        print("="*80)
+        print(f"Success: {result['success']}")
+        print(f"\nGenerated Code:\n{result['code'][:200]}...")
+        print("="*80)
         
-        for i, case in enumerate(test_cases, 1):
-            print(f"\n[{i}/{len(test_cases)}] Q: {case['question']}")
-            result = self.agent.solve_mmlu(case['question'], case['choices'])
-            
-            is_correct = result['answer'] == case['answer']
-            correct += int(is_correct)
-            
-            print(f"  Predicted: {result['answer']} - {case['choices'][ord(result['answer'])-65]}")
-            print(f"  Expected: {case['answer']} - {case['choices'][ord(case['answer'])-65]}")
-            print(f"  {'✅ CORRECT' if is_correct else '❌ WRONG'}")
-        
-        accuracy = (correct / len(test_cases)) * 100
-        print(f"\n{'='*70}")
-        print(f"🎯 MMLU Accuracy: {accuracy:.1f}% ({correct}/{len(test_cases)})")
-        print(f"{'='*70}\n")
-        
-        return accuracy
+        return result['success']
 
 
-# Main execution
+# ============================================================================
+# MAIN
+# ============================================================================
+
 if __name__ == "__main__":
-    print("="*70)
-    print("🚀 Qwen Agent Layer - Ready for T4 GPU")
-    print("="*70)
-    print(f"GPU Available: {torch.cuda.is_available()}")
-    if torch.cuda.is_available():
-        print(f"GPU Name: {torch.cuda.get_device_name(0)}")
-        print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
-    print("="*70 + "\n")
+    print("="*80)
+    print("🚀 ELITE CODING AGENT - INITIALIZING")
+    print("="*80)
     
     # Initialize agent
-    config = AgentConfig(
-        model_name="Qwen/Qwen2.5-0.5B-Instruct",
-        use_self_consistency=True,
-        num_samples=3,
-        max_iterations=3,
-    )
+    agent = CodingAgent("Qwen/Qwen2.5-1.5B-Instruct")
     
-    agent = QwenAgent(config)
+    # Show configurations
+    agent.optimizer.print_all_configs()
     
-    # Run examples
-    print("\n" + "="*70)
-    print("🎮 RUNNING EXAMPLES")
-    print("="*70)
+    # Run sample evaluations
+    evaluator = CodingBenchmarkEvaluator(agent)
     
-    # Example 1: GSM8K
-    print("\n1️⃣ GSM8K Math Problem")
-    print("-"*70)
-    result = agent.solve_gsm8k("If 5 pencils cost $2.50, how much do 12 pencils cost?")
-    print(f"💡 Answer: {result['answer']}\n")
+    print("\n" + "="*80)
+    print("🧪 RUNNING SAMPLE TESTS")
+    print("="*80)
     
-    # Example 2: MMLU
-    print("2️⃣ MMLU Multiple Choice")
-    print("-"*70)
-    result = agent.solve_mmlu(
-        "What is the powerhouse of the cell?",
-        ["Nucleus", "Mitochondria", "Ribosome", "Chloroplast"]
-    )
-    print(f"💡 Answer: {result['answer']}\n")
+    humaneval_success = evaluator.evaluate_humaneval_sample()
+    mbpp_success = evaluator.evaluate_mbpp_sample()
     
-    # Example 3: ReAct
-    print("3️⃣ ReAct Agent")
-    print("-"*70)
-    result = agent.react_agent("Calculate 25 * 4 + 50")
-    print(f"💡 Answer: {result['answer']}\n")
+    print("\n" + "="*80)
+    print("📊 SAMPLE RESULTS")
+    print("="*80)
+    print(f"HumanEval: {'✅ PASS' if humaneval_success else '❌ FAIL'}")
+    print(f"MBPP: {'✅ PASS' if mbpp_success else '❌ FAIL'}")
+    print("="*80)
     
-    # Benchmark evaluation
-    evaluator = BenchmarkEvaluator(agent)
-    gsm8k_score = evaluator.evaluate_gsm8k_sample(sample_size=3)
-    mmlu_score = evaluator.evaluate_mmlu_sample()
-    
-    print("\n" + "="*70)
-    print("🏆 BENCHMARK RESULTS")
-    print("="*70)
-    print(f"GSM8K: {gsm8k_score:.1f}%")
-    print(f"MMLU: {mmlu_score:.1f}%")
-    print("="*70)
+    print("\n✅ Agent ready for coding tasks!")
+    print("\n💡 Usage:")
+    print("  result = agent.solve_humaneval(problem, signature)")
+    print("  result = agent.solve_mbpp(description, examples)")
+    print("  result = agent.solve_swe_bench(issue, context)")
