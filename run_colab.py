@@ -55,9 +55,9 @@ from contextlib import asynccontextmanager
 import asyncio
 
 # Import WB AI modules
-from agent_layer import CodingAgent, CodeExecutor
-from advanced_techniques import AdvancedCodingTechniques
-from performance_config import PerformanceOptimizer
+from .agent_layer import CodingAgent, CodeExecutor
+from .advanced_techniques import AdvancedCodingTechniques
+from .performance_config import PerformanceOptimizer
 
 # ============================================================================
 # CONFIGURATION
