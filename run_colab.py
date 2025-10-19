@@ -81,7 +81,7 @@ class SystemConfig:
     """WB AI Corporation System Configuration"""
     
     # API Configuration
-    NGROK_AUTH_TOKEN: str = os.getenv("NGROK_AUTH_TOKEN", "")
+    NGROK_AUTH_TOKEN: str = os.getenv("NGROK_AUTH_TOKEN", "1vikehg18jsR9XrEzKEybCifEr9_AWWFzoCD58Xa151mXfLd")
     API_KEY: str = os.getenv("API_KEY", f"sk-wb-ai-{uuid.uuid4().hex[:16]}")
     PORT: int = 8000
     
