@@ -67,7 +67,7 @@ class ServerConfig:
     """Production server configuration"""
     
     # Core Settings
-    MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"  # Update to your Qwen3-1.7B path
+    MODEL_NAME = "Qwen/Qwen3-1.7B-Instruct"  # Update to your Qwen3-1.7B path
     PORT = 8000
     HOST = "0.0.0.0"
     
@@ -81,7 +81,7 @@ class ServerConfig:
     MAX_QUEUE_SIZE = 100
     
     # NGROK (Set your token here)
-    NGROK_TOKEN = os.getenv("NGROK_AUTH_TOKEN", "YOUR_NGROK_TOKEN")  # Set via environment
+    NGROK_TOKEN = os.getenv("NGROK_AUTH_TOKEN", "1vikehg18jsR9XrEzKEybCifEr9_AWWFzoCD58Xa151mXfLd")  # Set via environment
     
     # Generate unique API key
     API_KEY = f"{API_KEY_PREFIX}{uuid.uuid4().hex[:24]}"
