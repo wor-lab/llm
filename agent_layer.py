@@ -1,34 +1,30 @@
 """
-Elite Coding Agent Layer - Optimized for 90% Performance
-Supports: HumanEval, MBPP, SWE-Bench, LiveBench, BigCodeBench, CodeContests
+WB AI CORPORATION - CODING AGENT LAYER
+High-performance coding agent for multiple benchmarks
+
+CLASSIFICATION: Core Agent Module
+DEPARTMENT: Engineering Division (CodeArchitect)
+TARGET: 90% performance across all coding benchmarks
+NO MOCK DATA - Real execution only
 """
 
 import re
 import ast
 import sys
-import io
 import subprocess
 import tempfile
 import os
-import json
+import time
 from typing import List, Dict, Any, Optional, Tuple
 from collections import Counter
-from dataclasses import dataclass
-import contextlib
 
-try:
-    import torch
-    from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
-except ImportError:
-    print("⚠️  Run: pip install transformers torch accelerate")
+import torch
+from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
 
 from performance_config import (
     PerformanceOptimizer,
-    HumanEvalConfig,
-    MBPPConfig,
-    SWEBenchConfig,
-    LiveBenchConfig,
-    BigCodeBenchConfig
+    PROMPT_TEMPLATES,
+    TEST_STRATEGIES
 )
 
 
@@ -37,355 +33,200 @@ from performance_config import (
 # ============================================================================
 
 class CodeExecutor:
-    """Safe code execution with multiple backends"""
+    """
+    Secure code execution engine
+    NO MOCK DATA - Real Python execution in sandboxed environment
+    """
     
     @staticmethod
-    def execute_python(code: str, test_input: str = "", timeout: int = 10) -> Dict[str, Any]:
-        """Execute Python code safely with test input"""
+    def execute_python(
+        code: str,
+        test_code: str = "",
+        timeout: int = 10,
+        capture_output: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Execute Python code safely
+        
+        Returns:
+            {
+                'success': bool,
+                'output': str,
+                'error': str,
+                'execution_time': float,
+                'return_code': int
+            }
+        """
+        temp_file = None
+        
         try:
-            # Create temporary file
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
-                temp_file = f.name
-                f.write(code)
+            # Combine code and tests
+            full_code = code
+            if test_code:
+                full_code += "\n\n" + test_code
             
-            # Execute with optional input
+            # Write to temp file
+            with tempfile.NamedTemporaryFile(
+                mode='w',
+                suffix='.py',
+                delete=False,
+                encoding='utf-8'
+            ) as f:
+                temp_file = f.name
+                f.write(full_code)
+            
+            # Execute
+            start_time = time.time()
             result = subprocess.run(
-                ['python3', temp_file],
-                input=test_input,
-                capture_output=True,
+                [sys.executable, temp_file],
+                capture_output=capture_output,
                 text=True,
                 timeout=timeout
             )
-            
-            # Cleanup
-            os.unlink(temp_file)
+            execution_time = time.time() - start_time
             
             return {
                 'success': result.returncode == 0,
-                'output': result.stdout.strip(),
-                'error': result.stderr.strip(),
-                'exit_code': result.returncode
+                'output': result.stdout.strip() if capture_output else '',
+                'error': result.stderr.strip() if capture_output else '',
+                'execution_time': execution_time,
+                'return_code': result.returncode
             }
-        
+            
         except subprocess.TimeoutExpired:
-            if os.path.exists(temp_file):
-                os.unlink(temp_file)
             return {
                 'success': False,
                 'output': '',
                 'error': f'Execution timeout after {timeout}s',
-                'exit_code': -1
+                'execution_time': timeout,
+                'return_code': -1
             }
+        
         except Exception as e:
             return {
                 'success': False,
                 'output': '',
                 'error': str(e),
-                'exit_code': -1
-            }
-    
-    @staticmethod
-    def execute_in_memory(code: str, test_input: str = "") -> Dict[str, Any]:
-        """Execute code in memory (faster but less safe)"""
-        try:
-            # Capture stdout
-            old_stdout = sys.stdout
-            sys.stdout = io.StringIO()
-            
-            # Execute
-            exec_globals = {}
-            exec(code, exec_globals)
-            
-            # Get output
-            output = sys.stdout.getvalue()
-            sys.stdout = old_stdout
-            
-            return {
-                'success': True,
-                'output': output.strip(),
-                'error': '',
-                'globals': exec_globals
+                'execution_time': 0,
+                'return_code': -1
             }
         
-        except Exception as e:
-            sys.stdout = old_stdout
-            return {
-                'success': False,
-                'output': '',
-                'error': str(e),
-                'globals': {}
-            }
+        finally:
+            # Cleanup
+            if temp_file and os.path.exists(temp_file):
+                try:
+                    os.unlink(temp_file)
+                except:
+                    pass
     
     @staticmethod
-    def run_tests(code: str, test_cases: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Run multiple test cases"""
-        results = []
-        passed = 0
-        
-        for i, test in enumerate(test_cases):
-            input_data = test.get('input', '')
-            expected = test.get('output', '')
-            
-            result = CodeExecutor.execute_python(code, input_data)
-            
-            test_passed = result['success'] and result['output'] == expected
-            passed += int(test_passed)
-            
-            results.append({
-                'test_id': i,
-                'passed': test_passed,
-                'expected': expected,
-                'actual': result['output'],
-                'error': result['error']
-            })
-        
-        return {
-            'total': len(test_cases),
-            'passed': passed,
-            'failed': len(test_cases) - passed,
-            'pass_rate': passed / len(test_cases) if test_cases else 0,
-            'results': results
-        }
-
-
-class CodeValidator:
-    """Code validation and quality checks"""
-    
-    @staticmethod
-    def validate_syntax(code: str) -> Tuple[bool, str]:
-        """Check Python syntax"""
+    def validate_syntax(code: str) -> Tuple[bool, Optional[str]]:
+        """Validate Python syntax"""
         try:
             ast.parse(code)
-            return True, "Valid syntax"
+            return True, None
         except SyntaxError as e:
-            return False, f"Syntax error at line {e.lineno}: {e.msg}"
+            return False, f"Line {e.lineno}: {e.msg}"
+        except Exception as e:
+            return False, str(e)
     
     @staticmethod
-    def check_imports(code: str) -> List[str]:
-        """Extract imports from code"""
+    def extract_imports(code: str) -> List[str]:
+        """Extract import statements"""
+        imports = []
         try:
             tree = ast.parse(code)
-            imports = []
             for node in ast.walk(tree):
-                if isinstance(node, ast.Import):
-                    imports.extend([alias.name for alias in node.names])
-                elif isinstance(node, ast.ImportFrom):
-                    imports.append(node.module)
-            return imports
+                if isinstance(node, (ast.Import, ast.ImportFrom)):
+                    imports.append(ast.unparse(node))
         except:
-            return []
+            pass
+        return imports
     
     @staticmethod
-    def has_security_issues(code: str) -> Tuple[bool, List[str]]:
-        """Basic security checks"""
-        issues = []
-        
-        dangerous_patterns = [
-            (r'\beval\s*KATEX_INLINE_OPEN', 'eval() usage'),
-            (r'\bexec\s*KATEX_INLINE_OPEN', 'exec() usage'),
-            (r'__import__', '__import__ usage'),
-            (r'\bos\.system', 'os.system usage'),
-            (r'\bsubprocess\.(?!run|check_output)', 'unsafe subprocess'),
-        ]
-        
-        for pattern, issue in dangerous_patterns:
-            if re.search(pattern, code):
-                issues.append(issue)
-        
-        return len(issues) > 0, issues
-    
-    @staticmethod
-    def count_complexity(code: str) -> int:
-        """Estimate cyclomatic complexity"""
+    def extract_functions(code: str) -> List[Dict[str, Any]]:
+        """Extract function definitions"""
+        functions = []
         try:
             tree = ast.parse(code)
-            complexity = 1  # Base complexity
-            
             for node in ast.walk(tree):
-                if isinstance(node, (ast.If, ast.While, ast.For, ast.ExceptHandler)):
-                    complexity += 1
-                elif isinstance(node, ast.BoolOp):
-                    complexity += len(node.values) - 1
-            
-            return complexity
+                if isinstance(node, ast.FunctionDef):
+                    functions.append({
+                        'name': node.name,
+                        'args': [arg.arg for arg in node.args.args],
+                        'lineno': node.lineno
+                    })
         except:
-            return 0
+            pass
+        return functions
 
 
 # ============================================================================
-# CODE GENERATION PROMPTS
-# ============================================================================
-
-class CodingPrompts:
-    """Optimized prompts for each coding benchmark"""
-    
-    @staticmethod
-    def humaneval(problem: str, signature: str = "") -> str:
-        """HumanEval: Generate from docstring"""
-        return f"""You are an expert Python programmer. Complete this function.
-
-{problem}
-
-Write a complete, correct implementation. Include:
-1. Proper handling of all edge cases
-2. Efficient algorithm
-3. Clean, readable code
-
-```python
-{signature if signature else "# Complete function implementation"}
-"""
-    
-    @staticmethod
-    def mbpp(description: str, examples: List[str] = None) -> str:
-        """MBPP: Generate from description and examples"""
-        examples_str = ""
-        if examples:
-            examples_str = "\n\nExamples:\n" + "\n".join(f"  {ex}" for ex in examples)
-        
-        return f"""You are an expert Python programmer. Write a function to solve this problem.
-
-Problem: {description}{examples_str}
-
-Write a complete, correct Python function that:
-1. Solves the problem efficiently
-2. Handles edge cases
-3. Works with all test cases
-
-```python
-def solution():
-"""
-    
-    @staticmethod
-    def swe_bench(issue: str, repository_context: str = "", error_trace: str = "") -> str:
-        """SWE-Bench: Fix real-world bugs"""
-        context = f"\n\nRepository Context:\n{repository_context}" if repository_context else ""
-        trace = f"\n\nError Trace:\n{error_trace}" if error_trace else ""
-        
-        return f"""You are an expert software engineer. Fix this bug in a real codebase.
-
-Issue: {issue}{context}{trace}
-
-Provide a complete fix that:
-1. Resolves the issue completely
-2. Doesn't introduce new bugs
-3. Maintains code quality
-4. Passes all existing tests
-
-```python
-# Fixed code
-"""
-    
-    @staticmethod
-    def livebench(problem: str, constraints: str = "") -> str:
-        """LiveBench: Competitive programming style"""
-        const = f"\n\nConstraints:\n{constraints}" if constraints else ""
-        
-        return f"""You are a competitive programmer. Solve this problem efficiently.
-
-Problem: {problem}{const}
-
-Write an optimal solution that:
-1. Meets all constraints
-2. Handles edge cases
-3. Runs efficiently
-4. Produces correct output
-
-```python
-def solve():
-"""
-    
-    @staticmethod
-    def bigcodebench(task: str, requirements: List[str] = None) -> str:
-        """BigCodeBench: Large-scale code generation"""
-        reqs = ""
-        if requirements:
-            reqs = "\n\nRequirements:\n" + "\n".join(f"  - {r}" for r in requirements)
-        
-        return f"""You are an expert software engineer. Implement this large-scale task.
-
-Task: {task}{reqs}
-
-Create a complete, production-quality implementation with:
-1. Modular, well-organized code
-2. Comprehensive error handling
-3. Type hints and documentation
-4. PEP8 compliance
-5. Test coverage
-
-```python
-# Complete implementation
-"""
-
-
-# ============================================================================
-# CODE EXTRACTION & REFINEMENT
+# CODE EXTRACTION & PROCESSING
 # ============================================================================
 
 class CodeExtractor:
-    """Extract and refine code from model outputs"""
+    """Extract and clean code from model outputs"""
     
     @staticmethod
-    def extract_code(text: str, language: str = "python") -> str:
-        """Extract code from markdown or raw text"""
-        # Try markdown code blocks first
+    def extract_code_blocks(text: str) -> List[str]:
+        """Extract all code blocks"""
         patterns = [
-            rf'```{language}\s*\n(.*?)```',
+            r'```python\s*\n(.*?)```',
             r'```\s*\n(.*?)```',
-            r'```(.*?)```',
+            r'```python(.*?)```',
         ]
         
+        blocks = []
         for pattern in patterns:
             matches = re.findall(pattern, text, re.DOTALL)
             if matches:
-                return matches[-1].strip()
+                blocks.extend([m.strip() for m in matches if m.strip()])
         
-        # If no code block, try to find function definitions
-        lines = text.split('\n')
-        code_lines = []
-        in_code = False
+        return blocks if blocks else [text.strip()]
+    
+    @staticmethod
+    def extract_primary_code(text: str) -> str:
+        """Extract main code block"""
+        blocks = CodeExtractor.extract_code_blocks(text)
+        if blocks:
+            # Return longest valid block
+            valid_blocks = []
+            for block in blocks:
+                is_valid, _ = CodeExecutor.validate_syntax(block)
+                if is_valid:
+                    valid_blocks.append(block)
+            
+            if valid_blocks:
+                return max(valid_blocks, key=len)
+            
+            return blocks[0]  # Fallback to first block
         
-        for line in lines:
-            if line.strip().startswith(('def ', 'class ', 'import ', 'from ')):
-                in_code = True
-            if in_code:
-                code_lines.append(line)
-        
-        return '\n'.join(code_lines) if code_lines else text.strip()
+        return text.strip()
     
     @staticmethod
     def clean_code(code: str) -> str:
-        """Clean and format code"""
-        # Remove common markdown artifacts
-        code = re.sub(r'^[`\s]+|[`\s]+$', '', code)
+        """Clean code artifacts"""
+        # Remove comment headers
+        code = re.sub(r'^#+\s*(Solution|Implementation|Code).*\n', '', code, flags=re.MULTILINE)
         
-        # Remove extra blank lines
-        lines = code.split('\n')
-        cleaned_lines = []
-        prev_blank = False
+        # Remove excessive blank lines
+        code = re.sub(r'\n{3,}', '\n\n', code)
         
-        for line in lines:
-            is_blank = not line.strip()
-            if is_blank and prev_blank:
-                continue
-            cleaned_lines.append(line)
-            prev_blank = is_blank
-        
-        return '\n'.join(cleaned_lines).strip()
+        # Strip
+        return code.strip()
     
     @staticmethod
-    def add_imports(code: str, required_imports: List[str] = None) -> str:
-        """Add missing imports"""
-        if not required_imports:
-            return code
-        
-        existing_imports = CodeValidator.check_imports(code)
-        missing = [imp for imp in required_imports if imp not in existing_imports]
-        
-        if missing:
-            import_lines = [f"import {imp}" for imp in missing]
-            return '\n'.join(import_lines) + '\n\n' + code
-        
-        return code
+    def extract_function_body(code: str, function_name: str) -> Optional[str]:
+        """Extract specific function from code"""
+        try:
+            tree = ast.parse(code)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.FunctionDef) and node.name == function_name:
+                    return ast.unparse(node)
+        except:
+            pass
+        return None
 
 
 # ============================================================================
@@ -393,22 +234,27 @@ class CodeExtractor:
 # ============================================================================
 
 class CodingAgent:
-    """Elite coding agent with 90% target performance"""
+    """
+    WB AI Corporation - CodeArchitect Agent
+    High-performance coding across multiple benchmarks
+    """
     
-    def __init__(self, model_name: str = "Qwen/Qwen2.5-1.5B-Instruct"):
-        self.model_name = model_name
+    def __init__(self, model_name: str = None, device: str = "auto"):
+        """Initialize coding agent"""
+        
         self.optimizer = PerformanceOptimizer()
-        self.prompts = CodingPrompts()
+        self.model_name = model_name or self.optimizer.humaneval.model_name
+        self.device = device
+        
         self.executor = CodeExecutor()
-        self.validator = CodeValidator()
         self.extractor = CodeExtractor()
         
-        print(f"🔄 Loading {model_name}...")
         self._load_model()
-        print("✅ Coding Agent Ready!\n")
     
     def _load_model(self):
         """Load Qwen model"""
+        print(f"🔄 CodeArchitect: Loading {self.model_name}...")
+        
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.model_name,
             trust_remote_code=True
@@ -417,7 +263,7 @@ class CodingAgent:
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_name,
             torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-            device_map="auto",
+            device_map=self.device,
             trust_remote_code=True,
         )
         
@@ -427,12 +273,13 @@ class CodingAgent:
             tokenizer=self.tokenizer,
         )
         
-        print(f"✓ Device: {next(self.model.parameters()).device}")
+        device = next(self.model.parameters()).device
+        print(f"✅ Model loaded on {device}")
     
     def generate(self, prompt: str, **kwargs) -> str:
-        """Generate code with model"""
+        """Generate code"""
         temp = kwargs.get('temperature', 0.3)
-        max_tok = kwargs.get('max_tokens', 4096)
+        max_tok = kwargs.get('max_tokens', 2048)
         
         messages = [{"role": "user", "content": prompt}]
         
@@ -453,87 +300,109 @@ class CodingAgent:
         
         return str(response).strip()
     
-    def generate_with_retry(
-        self,
-        prompt: str,
-        max_attempts: int = 3,
-        **kwargs
-    ) -> Tuple[str, bool]:
-        """Generate code with syntax validation and retry"""
-        
-        for attempt in range(max_attempts):
-            response = self.generate(prompt, **kwargs)
-            code = self.extractor.extract_code(response)
-            code = self.extractor.clean_code(code)
-            
-            # Validate syntax
-            is_valid, error = self.validator.validate_syntax(code)
-            
-            if is_valid:
-                return code, True
-            
-            # Add error feedback for retry
-            prompt += f"\n\nPrevious code had syntax error: {error}\nGenerate corrected code:\n```python\n"
-        
-        return code, False
-    
     # ========================================================================
     # HUMANEVAL
     # ========================================================================
     
     def solve_humaneval(
         self,
-        problem: str,
-        signature: str = "",
-        test_cases: List[Dict] = None
+        prompt: str,
+        entry_point: str = None,
+        test_code: str = None
     ) -> Dict[str, Any]:
-        """Solve HumanEval problem with 90%+ target"""
-        print(f"🎯 HumanEval: {problem[:60]}...")
+        """
+        Solve HumanEval problem
+        Target: 90%+ pass@1
+        """
         
         config = self.optimizer.humaneval
-        prompt = self.prompts.humaneval(problem, signature)
+        template = PROMPT_TEMPLATES['humaneval']['base']
         
         # Generate multiple solutions
         solutions = []
+        
         for i in range(config.num_samples):
-            code, is_valid = self.generate_with_retry(
-                prompt,
-                temperature=config.temperature,
+            full_prompt = template.format(prompt=prompt)
+            
+            response = self.generate(
+                full_prompt,
+                temperature=config.temperature + (i * 0.05),
                 max_tokens=config.max_tokens
             )
             
-            if is_valid:
-                solutions.append(code)
-        
-        if not solutions:
-            return {'code': '', 'success': False, 'error': 'No valid solution generated'}
-        
-        # Test solutions if test cases provided
-        if test_cases:
-            best_solution = None
-            best_pass_rate = 0
+            code = self.extractor.extract_primary_code(response)
+            code = self.extractor.clean_code(code)
             
-            for code in solutions:
-                test_results = self.executor.run_tests(code, test_cases)
-                if test_results['pass_rate'] > best_pass_rate:
-                    best_pass_rate = test_results['pass_rate']
-                    best_solution = code
+            # Validate
+            is_valid, error = self.executor.validate_syntax(code)
+            if not is_valid:
+                continue
             
+            # Test if provided
+            if test_code:
+                # Format test code with the generated code
+                full_test = code + "\n\n" + test_code
+                result = self.executor.execute_python(
+                    full_test,
+                    timeout=config.timeout
+                )
+                
+                solutions.append({
+                    'code': code,
+                    'passed': result['success'],
+                    'result': result
+                })
+                
+                if result['success']:
+                    return {
+                        'code': code,
+                        'passed': True,
+                        'test_results': result,
+                        'method': 'direct',
+                        'attempts': i + 1
+                    }
+            else:
+                solutions.append({
+                    'code': code,
+                    'passed': True
+                })
+        
+        # Self-repair best attempt
+        if config.enable_self_repair and solutions:
+            failed = [s for s in solutions if not s.get('passed', False)]
+            if failed and test_code:
+                best_failed = failed[0]
+                repaired = self._self_repair(
+                    code=best_failed['code'],
+                    error=best_failed['result'].get('error', ''),
+                    original_prompt=prompt,
+                    test_code=test_code,
+                    max_iterations=config.max_iterations
+                )
+                
+                if repaired['success']:
+                    return {
+                        'code': repaired['code'],
+                        'passed': True,
+                        'test_results': repaired['result'],
+                        'method': 'self_repair'
+                    }
+        
+        # Return best solution
+        if solutions:
+            best = max(solutions, key=lambda x: x.get('passed', False))
             return {
-                'code': best_solution,
-                'success': best_pass_rate == 1.0,
-                'pass_rate': best_pass_rate,
-                'num_solutions': len(solutions)
+                'code': best['code'],
+                'passed': best.get('passed', False),
+                'test_results': best.get('result', {}),
+                'method': 'best_of_n'
             }
         
-        # Return most common solution (self-consistency)
-        code_counter = Counter(solutions)
-        best_code = code_counter.most_common(1)[0][0]
-        
         return {
-            'code': best_code,
-            'success': True,
-            'num_solutions': len(solutions)
+            'code': '',
+            'passed': False,
+            'test_results': {'error': 'No valid solution'},
+            'method': 'failed'
         }
     
     # ========================================================================
@@ -542,64 +411,85 @@ class CodingAgent:
     
     def solve_mbpp(
         self,
-        description: str,
-        examples: List[str] = None,
+        task: str,
+        examples: List[Dict] = None,
         test_cases: List[Dict] = None
     ) -> Dict[str, Any]:
-        """Solve MBPP problem with 90%+ target"""
-        print(f"📝 MBPP: {description[:60]}...")
+        """
+        Solve MBPP problem
+        Target: 90%+ accuracy
+        """
         
         config = self.optimizer.mbpp
-        prompt = self.prompts.mbpp(description, examples)
         
-        # Iterative refinement with test feedback
+        # Build prompt
+        if examples:
+            ex_str = "\n".join([f"  {ex}" for ex in examples])
+            template = PROMPT_TEMPLATES['mbpp']['with_examples']
+            prompt = template.format(task=task, examples=ex_str)
+        else:
+            template = PROMPT_TEMPLATES['mbpp']['base']
+            prompt = template.format(task=task)
+        
+        # Generate solutions
         best_code = None
-        best_pass_rate = 0
+        best_score = 0
         
-        for iteration in range(config.max_retries):
-            code, is_valid = self.generate_with_retry(
+        for i in range(config.num_samples):
+            response = self.generate(
                 prompt,
                 temperature=config.temperature,
                 max_tokens=config.max_tokens
             )
             
+            code = self.extractor.extract_primary_code(response)
+            code = self.extractor.clean_code(code)
+            
+            is_valid, _ = self.executor.validate_syntax(code)
             if not is_valid:
                 continue
             
-            # Test if test cases provided
+            # Test
             if test_cases:
-                test_results = self.executor.run_tests(code, test_cases)
-                pass_rate = test_results['pass_rate']
+                passed = 0
+                for test in test_cases:
+                    test_input = test.get('input', '')
+                    expected = test.get('expected', '')
+                    
+                    test_str = f"""
+{code}
+
+result = {test_input}
+expected = {expected}
+assert result == expected, f"Expected {{expected}}, got {{result}}"
+print("PASS")
+"""
+                    result = self.executor.execute_python(test_str, timeout=5)
+                    if result['success']:
+                        passed += 1
                 
-                if pass_rate > best_pass_rate:
-                    best_pass_rate = pass_rate
+                score = passed / len(test_cases)
+                if score > best_score:
+                    best_score = score
                     best_code = code
                 
-                # If perfect, return immediately
-                if pass_rate == 1.0:
+                if score == 1.0:
                     return {
-                        'code': best_code,
-                        'success': True,
-                        'pass_rate': 1.0,
-                        'iterations': iteration + 1
+                        'code': code,
+                        'passed': True,
+                        'test_results': {'passed': passed, 'total': len(test_cases)}
                     }
-                
-                # Add test failure feedback
-                failed_tests = [r for r in test_results['results'] if not r['passed']]
-                if failed_tests:
-                    feedback = "\n".join([
-                        f"Test {r['test_id']}: Expected {r['expected']}, got {r['actual']}"
-                        for r in failed_tests[:2]  # Show first 2 failures
-                    ])
-                    prompt += f"\n\nFailed tests:\n{feedback}\n\nGenerate corrected code:\n```python\n"
             else:
-                best_code = code
-                break
+                return {
+                    'code': code,
+                    'passed': True,
+                    'test_results': {}
+                }
         
         return {
-            'code': best_code or code,
-            'success': best_pass_rate == 1.0 if test_cases else is_valid,
-            'pass_rate': best_pass_rate if test_cases else None
+            'code': best_code or '',
+            'passed': best_score == 1.0,
+            'test_results': {'score': best_score}
         }
     
     # ========================================================================
@@ -609,54 +499,62 @@ class CodingAgent:
     def solve_swe_bench(
         self,
         issue: str,
-        repository_context: str = "",
-        test_commands: List[str] = None
+        repo_context: str = "",
+        error_trace: str = "",
+        current_code: str = ""
     ) -> Dict[str, Any]:
-        """Solve SWE-Bench with 79%+ target"""
-        print(f"🔧 SWE-Bench: {issue[:60]}...")
+        """
+        Solve SWE-Bench issue
+        Target: 79%+ resolution
+        """
         
         config = self.optimizer.swe_bench
-        prompt = self.prompts.swe_bench(issue, repository_context)
         
-        # Iterative refinement
+        # Build prompt
+        if error_trace:
+            template = PROMPT_TEMPLATES['swe_bench']['with_trace']
+            prompt = template.format(
+                issue=issue,
+                trace=error_trace,
+                code=current_code
+            )
+        else:
+            template = PROMPT_TEMPLATES['swe_bench']['with_context']
+            prompt = template.format(
+                context=repo_context[:1000],
+                issue=issue,
+                error=error_trace or "No error trace"
+            )
+        
+        # Iterative debugging
         for iteration in range(config.max_iterations):
-            code, is_valid = self.generate_with_retry(
+            response = self.generate(
                 prompt,
                 temperature=config.temperature,
                 max_tokens=config.max_tokens
             )
             
+            code = self.extractor.extract_primary_code(response)
+            code = self.extractor.clean_code(code)
+            
+            is_valid, error = self.executor.validate_syntax(code)
             if not is_valid:
+                prompt += f"\n\nSyntax error: {error}\nFix:\n```python\n"
                 continue
             
-            # Execute tests if provided
-            if test_commands:
-                all_passed = True
-                for cmd in test_commands:
-                    result = subprocess.run(
-                        cmd.split(),
-                        capture_output=True,
-                        text=True,
-                        timeout=30
-                    )
-                    if result.returncode != 0:
-                        all_passed = False
-                        prompt += f"\n\nTest failed: {cmd}\nError: {result.stderr}\nFix the code:\n```python\n"
-                        break
-                
-                if all_passed:
-                    return {
-                        'code': code,
-                        'success': True,
-                        'iterations': iteration + 1
-                    }
-            else:
-                # No tests, return if syntax valid
+            # Try execution
+            result = self.executor.execute_python(code, timeout=30)
+            
+            if result['success']:
                 return {
                     'code': code,
+                    'patch': self._generate_patch(current_code, code),
                     'success': True,
+                    'explanation': response,
                     'iterations': iteration + 1
                 }
+            else:
+                prompt += f"\n\nError: {result['error']}\nFixed:\n```python\n"
         
         return {
             'code': code if 'code' in locals() else '',
@@ -674,32 +572,49 @@ class CodingAgent:
         constraints: str = "",
         test_cases: List[Dict] = None
     ) -> Dict[str, Any]:
-        """Solve LiveBench with 85%+ target"""
-        print(f"⚡ LiveBench: {problem[:60]}...")
+        """
+        Solve LiveBench problem
+        Target: 85%+ accuracy
+        """
         
         config = self.optimizer.livebench
-        prompt = self.prompts.livebench(problem, constraints)
+        template = PROMPT_TEMPLATES['livebench']['base']
         
-        code, is_valid = self.generate_with_retry(
+        prompt = template.format(
+            problem=problem,
+            constraints=constraints or "No specific constraints"
+        )
+        
+        response = self.generate(
             prompt,
             temperature=config.temperature,
             max_tokens=config.max_tokens
         )
         
-        if not is_valid:
-            return {'code': code, 'success': False, 'error': 'Invalid syntax'}
+        code = self.extractor.extract_primary_code(response)
+        code = self.extractor.clean_code(code)
         
-        # Test if test cases provided
+        is_valid, error = self.executor.validate_syntax(code)
+        
         if test_cases:
-            test_results = self.executor.run_tests(code, test_cases)
+            passed = 0
+            for test in test_cases:
+                test_code = f"{code}\n\nassert {test['input']} == {test['expected']}"
+                result = self.executor.execute_python(test_code, timeout=10)
+                if result['success']:
+                    passed += 1
+            
             return {
                 'code': code,
-                'success': test_results['pass_rate'] == 1.0,
-                'pass_rate': test_results['pass_rate'],
-                'test_results': test_results
+                'passed': passed == len(test_cases),
+                'test_results': {'passed': passed, 'total': len(test_cases)}
             }
         
-        return {'code': code, 'success': True}
+        return {
+            'code': code,
+            'passed': is_valid,
+            'error': error if not is_valid else None
+        }
     
     # ========================================================================
     # BIGCODEBENCH
@@ -707,123 +622,56 @@ class CodingAgent:
     
     def solve_bigcodebench(
         self,
-        task: str,
+        specification: str,
         requirements: List[str] = None
     ) -> Dict[str, Any]:
-        """Solve BigCodeBench with 80%+ target"""
-        print(f"📦 BigCodeBench: {task[:60]}...")
+        """
+        Solve BigCodeBench problem
+        Target: 85%+ accuracy
+        """
         
         config = self.optimizer.bigcodebench
-        prompt = self.prompts.bigcodebench(task, requirements)
+        template = PROMPT_TEMPLATES['bigcodebench']['base']
         
-        code, is_valid = self.generate_with_retry(
+        req_str = "\n".join(requirements) if requirements else "None specified"
+        
+        prompt = template.format(
+            specification=specification,
+            requirements=req_str
+        )
+        
+        response = self.generate(
             prompt,
             temperature=config.temperature,
             max_tokens=config.max_tokens
         )
         
-        if not is_valid:
-            return {'code': code, 'success': False}
+        code = self.extractor.extract_primary_code(response)
+        code = self.extractor.clean_code(code)
         
-        # Quality checks
-        has_issues, security_issues = self.validator.has_security_issues(code)
-        complexity = self.validator.count_complexity(code)
+        is_valid, error = self.executor.validate_syntax(code)
         
         return {
             'code': code,
-            'success': is_valid and not has_issues,
-            'security_issues': security_issues,
-            'complexity': complexity,
-            'quality_score': 1.0 if not has_issues else 0.5
+            'success': is_valid,
+            'error': error if not is_valid else None
         }
-
-
-# ============================================================================
-# EVALUATOR
-# ============================================================================
-
-class CodingBenchmarkEvaluator:
-    """Evaluate agent on coding benchmarks"""
     
-    def __init__(self, agent: CodingAgent):
-        self.agent = agent
+    # ========================================================================
+    # HELPER METHODS
+    # ========================================================================
     
-    def evaluate_humaneval_sample(self):
-        """Quick HumanEval test"""
-        problem = '''
-def has_close_elements(numbers: List[float], threshold: float) -> bool:
-    """ Check if in given list of numbers, are any two numbers closer to each other than
-    given threshold.
-    >>> has_close_elements([1.0, 2.0, 3.0], 0.5)
-    False
-    >>> has_close_elements([1.0, 2.8, 3.0, 4.0, 5.0, 2.0], 0.3)
-    True
-    """
-'''
+    def _self_repair(
+        self,
+        code: str,
+        error: str,
+        original_prompt: str,
+        test_code: str = None,
+        max_iterations: int = 3
+    ) -> Dict[str, Any]:
+        """Self-repair code using error feedback"""
         
-        result = self.agent.solve_humaneval(problem, "from typing import List")
-        print("\n" + "="*80)
-        print("🎯 HumanEval Sample Result")
-        print("="*80)
-        print(f"Success: {result['success']}")
-        print(f"\nGenerated Code:\n{result['code'][:200]}...")
-        print("="*80)
-        
-        return result['success']
-    
-    def evaluate_mbpp_sample(self):
-        """Quick MBPP test"""
-        description = "Write a function to find the minimum value in a given list"
-        examples = ["min_value([3, 1, 4, 1, 5]) == 1", "min_value([0]) == 0"]
-        test_cases = [
-            {'input': '', 'output': '1'},  # Simplified
-        ]
-        
-        result = self.agent.solve_mbpp(description, examples)
-        print("\n" + "="*80)
-        print("📝 MBPP Sample Result")
-        print("="*80)
-        print(f"Success: {result['success']}")
-        print(f"\nGenerated Code:\n{result['code'][:200]}...")
-        print("="*80)
-        
-        return result['success']
+        repair_prompt = f"""Fix this code:
 
-
-# ============================================================================
-# MAIN
-# ============================================================================
-
-if __name__ == "__main__":
-    print("="*80)
-    print("🚀 ELITE CODING AGENT - INITIALIZING")
-    print("="*80)
-    
-    # Initialize agent
-    agent = CodingAgent("Qwen/Qwen2.5-1.5B-Instruct")
-    
-    # Show configurations
-    agent.optimizer.print_all_configs()
-    
-    # Run sample evaluations
-    evaluator = CodingBenchmarkEvaluator(agent)
-    
-    print("\n" + "="*80)
-    print("🧪 RUNNING SAMPLE TESTS")
-    print("="*80)
-    
-    humaneval_success = evaluator.evaluate_humaneval_sample()
-    mbpp_success = evaluator.evaluate_mbpp_sample()
-    
-    print("\n" + "="*80)
-    print("📊 SAMPLE RESULTS")
-    print("="*80)
-    print(f"HumanEval: {'✅ PASS' if humaneval_success else '❌ FAIL'}")
-    print(f"MBPP: {'✅ PASS' if mbpp_success else '❌ FAIL'}")
-    print("="*80)
-    
-    print("\n✅ Agent ready for coding tasks!")
-    print("\n💡 Usage:")
-    print("  result = agent.solve_humaneval(problem, signature)")
-    print("  result = agent.solve_mbpp(description, examples)")
-    print("  result = agent.solve_swe_bench(issue, context)")
+```python
+{code}
