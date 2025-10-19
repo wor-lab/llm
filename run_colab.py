@@ -1,11 +1,8 @@
-#!/usr/bin/env python3
 """
-WB AI CORPORATION - AUTONOMOUS CODING AGENT SYSTEM
-Production deployment for Google Colab T4 GPU
-API Server with NGROK endpoint | Multi-agent orchestration | Zero mock data
-
-CLASSIFICATION: Production System
-AUTHOR: WB AI Corporation - Operations Division
+WB AI CORPORATION - QUANTUM-CODER API SERVER
+Operations Division - Production Deployment
+Classification: Enterprise-Grade
+NO MOCK DATA - PRODUCTION READY
 """
 
 import subprocess
@@ -16,37 +13,29 @@ import json
 import uuid
 from typing import Dict, Any, Optional
 from datetime import datetime
-from threading import Thread
 
 # ============================================================================
 # DEPENDENCY INSTALLATION
 # ============================================================================
 
-print("="*70)
-print("🏢 WB AI CORPORATION - SYSTEM INITIALIZATION")
-print("="*70)
-print(f"Timestamp: {datetime.now().isoformat()}")
-print(f"Environment: Google Colab T4 GPU")
-print(f"Mission: Deploy autonomous coding agent with 90% performance")
-print("="*70 + "\n")
+print("="*80)
+print("🏢 WB AI CORPORATION - QUANTUM-CODER INITIALIZATION")
+print("Operations Division - Deploying API Infrastructure")
+print("="*80)
 
-print("📦 Operations Division: Installing dependencies...")
-dependencies = [
-    "transformers",
-    "accelerate", 
-    "torch",
-    "fastapi",
-    "uvicorn",
-    "pyngrok",
-    "pydantic",
-    "sse-starlette",
-    "requests"
+DEPENDENCIES = [
+    "fastapi", "uvicorn[standard]", "pyngrok", 
+    "transformers", "accelerate", "torch", 
+    "pydantic", "python-multipart", "sse-starlette"
 ]
 
-subprocess.check_call([
-    sys.executable, "-m", "pip", "install", "-q"
-] + dependencies)
-
+print("\n📦 Installing production dependencies...")
+for dep in DEPENDENCIES:
+    subprocess.check_call(
+        [sys.executable, "-m", "pip", "install", "-q", dep],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
 print("✅ Dependencies installed\n")
 
 # ============================================================================
@@ -54,474 +43,544 @@ print("✅ Dependencies installed\n")
 # ============================================================================
 
 import torch
+from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
 from fastapi import FastAPI, HTTPException, Header, Depends, BackgroundTasks
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 from pyngrok import ngrok
 import uvicorn
-from typing import List
+from threading import Thread
+from contextlib import asynccontextmanager
+import asyncio
 
-# Import our modules
-from performance_config import (
-    PerformanceOptimizer,
-    HumanEvalConfig,
-    MBPPConfig,
-    SWEBenchConfig,
-    LiveBenchConfig,
-    BigCodeBenchConfig
-)
-from agent_layer import CodingAgent
+# Import WB AI modules
+from agent_layer import CodingAgent, CodeExecutor
 from advanced_techniques import AdvancedCodingTechniques
+from performance_config import PerformanceOptimizer
 
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
 
-class SystemConfig:
-    """WB AI Corporation System Configuration"""
+class ServerConfig:
+    """Production server configuration"""
     
-    # API Configuration
-    NGROK_AUTH_TOKEN: str = os.getenv("NGROK_AUTH_TOKEN", "1vikehg18jsR9XrEzKEybCifEr9_AWWFzoCD58Xa151mXfLd")
-    API_KEY: str = os.getenv("API_KEY", f"sk-wb-ai-{uuid.uuid4().hex[:16]}")
-    PORT: int = 8000
+    # Core Settings
+    MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"  # Update to your Qwen3-1.7B path
+    PORT = 8000
+    HOST = "0.0.0.0"
     
-    # Model Configuration
-    MODEL_NAME: str = "Qwen/Qwen3-1.7B"  # Update to Qwen3-1.7B path when available
-    DEVICE: str = "auto"
+    # Security
+    API_KEY_PREFIX = "sk-wb-ai-"
+    API_VERSION = "v1"
     
-    # Performance Targets
-    TARGET_HUMANEVAL: float = 0.90
-    TARGET_MBPP: float = 0.90
-    TARGET_SWEBENCH: float = 0.79
-    TARGET_LIVEBENCH: float = 0.85
-    TARGET_BIGCODEBENCH: float = 0.85
+    # Performance
+    MAX_WORKERS = 4
+    TIMEOUT = 300
+    MAX_QUEUE_SIZE = 100
     
-    # System Metadata
-    VERSION: str = "1.0.0"
-    CORPORATION: str = "WB AI Corporation"
-    DEPLOYMENT: str = "Production"
+    # NGROK (Set your token here)
+    NGROK_TOKEN = os.getenv("NGROK_AUTH_TOKEN", "YOUR_NGROK_TOKEN")  # Set via environment
+    
+    # Generate unique API key
+    API_KEY = f"{API_KEY_PREFIX}{uuid.uuid4().hex[:24]}"
+    
+    # Metadata
+    COMPANY = "WB AI Corporation"
+    DIVISION = "Engineering Division - Coding Intelligence"
+    DEPLOYMENT_ID = f"qc-{uuid.uuid4().hex[:8]}"
 
-config = SystemConfig()
+CONFIG = ServerConfig()
 
 # ============================================================================
-# API MODELS
+# API MODELS (OpenAI Compatible)
 # ============================================================================
 
-class CodeRequest(BaseModel):
-    """Code generation request"""
-    prompt: str
-    language: str = "python"
+class Message(BaseModel):
+    role: str
+    content: str
+
+class ChatCompletionRequest(BaseModel):
+    model: str
+    messages: list[Message]
     temperature: Optional[float] = 0.3
-    max_tokens: Optional[int] = 2048
+    top_p: Optional[float] = 0.95
+    max_tokens: Optional[int] = 4096
+    stream: Optional[bool] = False
 
-class BenchmarkRequest(BaseModel):
-    """Benchmark-specific request"""
-    benchmark: str  # humaneval, mbpp, swe_bench, livebench, bigcodebench
-    problem: str
-    test_cases: Optional[List[Dict[str, Any]]] = None
+class CompletionRequest(BaseModel):
+    model: str
+    prompt: str
+    temperature: Optional[float] = 0.3
+    max_tokens: Optional[int] = 4096
+
+class CodingTask(BaseModel):
+    """WB AI Custom Coding Endpoint"""
+    benchmark: str = Field(..., description="humaneval|mbpp|swe_bench|livebench|bigcodebench")
+    problem: str = Field(..., description="Problem description or code prompt")
+    test_cases: Optional[list] = None
     context: Optional[str] = None
-    entry_point: Optional[str] = None
+    config_override: Optional[Dict[str, Any]] = None
 
-class AgentTaskRequest(BaseModel):
-    """Multi-agent task request"""
-    task_type: str  # code, design, analyze, document, optimize
-    description: str
-    requirements: Optional[List[str]] = None
-    constraints: Optional[Dict[str, Any]] = None
-
-class HealthResponse(BaseModel):
-    """Health check response"""
-    status: str
-    corporation: str
-    version: str
-    gpu_available: bool
-    model_loaded: bool
-    timestamp: str
-    agents_active: List[str]
+class CodeExecutionRequest(BaseModel):
+    """Execute code endpoint"""
+    code: str
+    test_code: Optional[str] = None
+    timeout: Optional[int] = 10
 
 # ============================================================================
-# GLOBAL AGENT SYSTEM
+# GLOBAL STATE
 # ============================================================================
 
-class WBAICorporation:
-    """
-    WB AI Corporation - Autonomous AI Enterprise
-    Multi-agent orchestration system
-    """
+class GlobalState:
+    """Centralized state management"""
     
     def __init__(self):
-        self.config = config
-        self.optimizer = PerformanceOptimizer()
+        self.agent: Optional[CodingAgent] = None
+        self.advanced: Optional[AdvancedCodingTechniques] = None
+        self.optimizer: Optional[PerformanceOptimizer] = None
+        self.public_url: Optional[str] = None
+        self.startup_time: Optional[datetime] = None
+        self.request_count: int = 0
+        self.success_count: int = 0
         
-        # Agents (Departments)
-        self.code_architect: Optional[CodingAgent] = None
-        self.advanced_techniques: Optional[AdvancedCodingTechniques] = None
-        
-        # State
-        self.initialized = False
-        self.public_url = None
-        self.stats = {
-            'tasks_completed': 0,
-            'tasks_failed': 0,
-            'uptime_start': datetime.now(),
-            'benchmarks_run': {}
-        }
-    
-    def initialize(self):
-        """Initialize all AI agents"""
-        print("🧠 Engineering Division: Loading CodeArchitect agent...")
-        self.code_architect = CodingAgent(
-            model_name=self.config.MODEL_NAME,
-            device=self.config.DEVICE
-        )
-        
-        print("🎯 Strategy Division: Initializing advanced techniques...")
-        self.advanced_techniques = AdvancedCodingTechniques(self.code_architect)
-        
-        self.initialized = True
-        print("✅ WB AI Corporation: All systems operational\n")
-    
-    def execute_code_task(self, prompt: str, **kwargs) -> Dict[str, Any]:
-        """Execute code generation task"""
-        if not self.initialized:
-            raise RuntimeError("System not initialized")
-        
-        response = self.code_architect.generate(prompt, **kwargs)
-        code = self.code_architect.extractor.extract_primary_code(response)
-        
-        self.stats['tasks_completed'] += 1
-        
-        return {
-            'code': code,
-            'full_response': response,
-            'success': bool(code),
-            'timestamp': datetime.now().isoformat()
-        }
-    
-    def execute_benchmark(self, request: BenchmarkRequest) -> Dict[str, Any]:
-        """Execute benchmark-specific task"""
-        benchmark = request.benchmark.lower()
-        
-        if benchmark == 'humaneval':
-            result = self.code_architect.solve_humaneval(
-                prompt=request.problem,
-                entry_point=request.entry_point,
-                test_code=self._format_test_code(request.test_cases) if request.test_cases else None
-            )
-        elif benchmark == 'mbpp':
-            result = self.code_architect.solve_mbpp(
-                task=request.problem,
-                test_cases=request.test_cases
-            )
-        elif benchmark in ['swe_bench', 'swebench']:
-            result = self.code_architect.solve_swe_bench(
-                issue=request.problem,
-                repo_context=request.context or ""
-            )
-        elif benchmark == 'livebench':
-            result = self.code_architect.solve_livebench(
-                problem=request.problem,
-                test_cases=request.test_cases
-            )
-        elif benchmark == 'bigcodebench':
-            result = self.code_architect.solve_bigcodebench(
-                specification=request.problem,
-                requirements=request.requirements
-            )
-        else:
-            raise ValueError(f"Unknown benchmark: {benchmark}")
-        
-        # Update stats
-        if benchmark not in self.stats['benchmarks_run']:
-            self.stats['benchmarks_run'][benchmark] = {'total': 0, 'passed': 0}
-        
-        self.stats['benchmarks_run'][benchmark]['total'] += 1
-        if result.get('passed') or result.get('success'):
-            self.stats['benchmarks_run'][benchmark]['passed'] += 1
-        
-        self.stats['tasks_completed'] += 1
-        
-        return result
-    
-    def execute_agent_task(self, request: AgentTaskRequest) -> Dict[str, Any]:
-        """Execute multi-agent coordinated task"""
-        task_type = request.task_type.lower()
-        
-        if task_type == 'code':
-            # CodeArchitect handles
-            return self.execute_code_task(request.description)
-        
-        elif task_type == 'optimize':
-            # Use advanced techniques
-            result = self.advanced_techniques.multi_stage_code_generation(
-                problem=request.description,
-                complexity=request.constraints.get('complexity', 'medium') if request.constraints else 'medium'
-            )
-            return result
-        
-        elif task_type == 'ensemble':
-            # Ensemble generation
-            result = self.advanced_techniques.ensemble_generation(
-                problem=request.description,
-                num_solutions=request.constraints.get('num_solutions', 5) if request.constraints else 5
-            )
-            return result
-        
-        elif task_type == 'test_driven':
-            # Test-driven development
-            result = self.advanced_techniques.test_driven_generation(
-                specification=request.description,
-                test_cases=request.constraints.get('test_cases', []) if request.constraints else []
-            )
-            return result
-        
-        else:
-            raise ValueError(f"Unknown task type: {task_type}")
-    
-    @staticmethod
-    def _format_test_code(test_cases: List[Dict]) -> str:
-        """Format test cases into executable code"""
-        test_lines = []
-        for i, test in enumerate(test_cases):
-            test_lines.append(f"assert {test['input']} == {test['expected']}  # Test {i+1}")
-        return "\n".join(test_lines)
-    
-    def get_stats(self) -> Dict[str, Any]:
-        """Get system statistics"""
-        uptime = (datetime.now() - self.stats['uptime_start']).total_seconds()
-        
-        return {
-            'corporation': self.config.CORPORATION,
-            'version': self.config.VERSION,
-            'uptime_seconds': uptime,
-            'tasks_completed': self.stats['tasks_completed'],
-            'tasks_failed': self.stats['tasks_failed'],
-            'success_rate': self.stats['tasks_completed'] / max(1, self.stats['tasks_completed'] + self.stats['tasks_failed']),
-            'benchmarks': self.stats['benchmarks_run'],
-            'model': self.config.MODEL_NAME
-        }
+    def increment_request(self, success: bool = True):
+        self.request_count += 1
+        if success:
+            self.success_count += 1
 
-# Initialize corporation
-corporation = WBAICorporation()
+STATE = GlobalState()
+
+# ============================================================================
+# SECURITY
+# ============================================================================
+
+async def verify_api_key(authorization: str = Header(...)):
+    """Verify API key from Authorization header"""
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid authorization header format. Use: Bearer <api_key>"
+        )
+    
+    token = authorization.replace("Bearer ", "")
+    
+    if token != CONFIG.API_KEY:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid API key"
+        )
+    
+    return token
 
 # ============================================================================
 # FASTAPI APPLICATION
 # ============================================================================
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifecycle management"""
+    
+    # Startup
+    print("\n🚀 Initializing WB AI Coding Agent...")
+    STATE.startup_time = datetime.utcnow()
+    
+    try:
+        STATE.agent = CodingAgent(model_name=CONFIG.MODEL_NAME)
+        STATE.advanced = AdvancedCodingTechniques(STATE.agent)
+        STATE.optimizer = PerformanceOptimizer()
+        
+        print("✅ Agent initialized successfully")
+        print(f"📊 Model: {CONFIG.MODEL_NAME}")
+        print(f"🔐 API Key: {CONFIG.API_KEY}")
+        
+    except Exception as e:
+        print(f"❌ Failed to initialize agent: {e}")
+        raise
+    
+    yield
+    
+    # Shutdown
+    print("\n🛑 Shutting down WB AI server...")
+    if STATE.public_url:
+        try:
+            ngrok.disconnect(STATE.public_url)
+        except:
+            pass
+
 app = FastAPI(
-    title="WB AI Corporation - Coding Agent API",
-    description="Production-grade autonomous coding agent with 90% performance target",
-    version=config.VERSION,
-    docs_url="/api/docs",
-    redoc_url="/api/redoc"
+    title="WB AI Corporation - Quantum-Coder API",
+    description="Enterprise-grade coding intelligence API powered by Qwen3-1.7B",
+    version=CONFIG.API_VERSION,
+    lifespan=lifespan
+)
+
+# CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # ============================================================================
-# AUTHENTICATION
+# CORE ENDPOINTS
 # ============================================================================
-
-async def verify_api_key(authorization: str = Header(...)):
-    """Verify API key"""
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Invalid authorization header format")
-    
-    token = authorization.replace("Bearer ", "")
-    if token != config.API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API key")
-    
-    return token
-
-# ============================================================================
-# API ENDPOINTS
-# ============================================================================
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize system on startup"""
-    corporation.initialize()
 
 @app.get("/")
 async def root():
-    """Root endpoint"""
+    """API root"""
     return {
-        "corporation": config.CORPORATION,
+        "company": CONFIG.COMPANY,
+        "division": CONFIG.DIVISION,
+        "deployment_id": CONFIG.DEPLOYMENT_ID,
         "status": "operational",
-        "version": config.VERSION,
-        "deployment": config.DEPLOYMENT,
-        "message": "WB AI Corporation Autonomous Coding Agent",
-        "documentation": "/api/docs",
+        "api_version": CONFIG.API_VERSION,
+        "model": CONFIG.MODEL_NAME,
         "endpoints": {
+            "chat": f"/{CONFIG.API_VERSION}/chat/completions",
+            "completions": f"/{CONFIG.API_VERSION}/completions",
+            "coding": f"/{CONFIG.API_VERSION}/coding/solve",
+            "execute": f"/{CONFIG.API_VERSION}/coding/execute",
+            "models": f"/{CONFIG.API_VERSION}/models",
             "health": "/health",
-            "stats": "/stats",
-            "code": "/v1/code/generate",
-            "benchmark": "/v1/benchmark/solve",
-            "agent": "/v1/agent/execute"
+            "metrics": "/metrics"
+        },
+        "documentation": f"{STATE.public_url}/docs" if STATE.public_url else "/docs"
+    }
+
+@app.get("/health")
+async def health():
+    """Health check"""
+    return {
+        "status": "healthy",
+        "agent_loaded": STATE.agent is not None,
+        "gpu_available": torch.cuda.is_available(),
+        "gpu_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+        "uptime_seconds": (datetime.utcnow() - STATE.startup_time).total_seconds() if STATE.startup_time else 0,
+        "requests_total": STATE.request_count,
+        "requests_successful": STATE.success_count,
+        "success_rate": STATE.success_count / STATE.request_count if STATE.request_count > 0 else 0
+    }
+
+@app.get("/metrics")
+async def metrics(api_key: str = Depends(verify_api_key)):
+    """Production metrics"""
+    return {
+        "deployment": {
+            "id": CONFIG.DEPLOYMENT_ID,
+            "model": CONFIG.MODEL_NAME,
+            "startup_time": STATE.startup_time.isoformat() if STATE.startup_time else None,
+        },
+        "performance": {
+            "total_requests": STATE.request_count,
+            "successful_requests": STATE.success_count,
+            "failed_requests": STATE.request_count - STATE.success_count,
+            "success_rate": f"{(STATE.success_count / STATE.request_count * 100):.2f}%" if STATE.request_count > 0 else "0%",
+        },
+        "system": {
+            "gpu_available": torch.cuda.is_available(),
+            "gpu_memory_allocated": f"{torch.cuda.memory_allocated() / 1e9:.2f} GB" if torch.cuda.is_available() else None,
+            "gpu_memory_reserved": f"{torch.cuda.memory_reserved() / 1e9:.2f} GB" if torch.cuda.is_available() else None,
         }
     }
 
-@app.get("/health", response_model=HealthResponse)
-async def health_check():
-    """System health check"""
-    return HealthResponse(
-        status="healthy" if corporation.initialized else "initializing",
-        corporation=config.CORPORATION,
-        version=config.VERSION,
-        gpu_available=torch.cuda.is_available(),
-        model_loaded=corporation.code_architect is not None,
-        timestamp=datetime.now().isoformat(),
-        agents_active=[
-            "CodeArchitect",
-            "AdvancedTechniques",
-            "OpsManager",
-            "AutoBot"
+# ============================================================================
+# OPENAI-COMPATIBLE ENDPOINTS
+# ============================================================================
+
+@app.get(f"/{CONFIG.API_VERSION}/models")
+async def list_models(api_key: str = Depends(verify_api_key)):
+    """List available models (OpenAI compatible)"""
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": CONFIG.MODEL_NAME,
+                "object": "model",
+                "created": int(STATE.startup_time.timestamp()) if STATE.startup_time else int(time.time()),
+                "owned_by": CONFIG.COMPANY,
+                "permission": [],
+                "root": CONFIG.MODEL_NAME,
+                "parent": None,
+            }
         ]
-    )
+    }
 
-@app.get("/stats")
-async def get_statistics(api_key: str = Depends(verify_api_key)):
-    """Get system statistics"""
-    return corporation.get_stats()
-
-@app.post("/v1/code/generate")
-async def generate_code(
-    request: CodeRequest,
+@app.post(f"/{CONFIG.API_VERSION}/chat/completions")
+async def chat_completions(
+    request: ChatCompletionRequest,
     api_key: str = Depends(verify_api_key)
 ):
-    """
-    Generate code from prompt
+    """Chat completions (OpenAI compatible)"""
     
-    **Department**: CodeArchitect (Engineering Division)
-    """
     try:
-        result = corporation.execute_code_task(
-            prompt=request.prompt,
+        STATE.increment_request()
+        
+        # Convert messages
+        messages = [{"role": msg.role, "content": msg.content} for msg in request.messages]
+        
+        # Generate
+        response = STATE.agent.generate(
+            STATE.agent.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
+            ),
+            temperature=request.temperature,
+            max_tokens=request.max_tokens,
+            top_p=request.top_p
+        )
+        
+        return {
+            "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": request.model,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": response
+                    },
+                    "finish_reason": "stop"
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0
+            }
+        }
+        
+    except Exception as e:
+        STATE.increment_request(success=False)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post(f"/{CONFIG.API_VERSION}/completions")
+async def completions(
+    request: CompletionRequest,
+    api_key: str = Depends(verify_api_key)
+):
+    """Text completions (OpenAI compatible)"""
+    
+    try:
+        STATE.increment_request()
+        
+        response = STATE.agent.generate(
+            request.prompt,
             temperature=request.temperature,
             max_tokens=request.max_tokens
         )
         
         return {
-            "success": result['success'],
-            "code": result['code'],
-            "language": request.language,
-            "timestamp": result['timestamp'],
-            "model": config.MODEL_NAME
+            "id": f"cmpl-{uuid.uuid4().hex[:24]}",
+            "object": "text_completion",
+            "created": int(time.time()),
+            "model": request.model,
+            "choices": [
+                {
+                    "text": response,
+                    "index": 0,
+                    "finish_reason": "stop"
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0
+            }
         }
-    
+        
     except Exception as e:
-        corporation.stats['tasks_failed'] += 1
+        STATE.increment_request(success=False)
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/v1/benchmark/solve")
-async def solve_benchmark(
-    request: BenchmarkRequest,
+# ============================================================================
+# WB AI CUSTOM ENDPOINTS - CODING INTELLIGENCE
+# ============================================================================
+
+@app.post(f"/{CONFIG.API_VERSION}/coding/solve")
+async def solve_coding_task(
+    task: CodingTask,
     api_key: str = Depends(verify_api_key)
 ):
     """
-    Solve benchmark-specific problem
-    
-    **Supported Benchmarks**:
-    - HumanEval (target: 90%+)
-    - MBPP (target: 90%+)
-    - SWE-Bench (target: 79%+)
-    - LiveBench (target: 85%+)
-    - BigCodeBench (target: 85%+)
+    WB AI Coding Intelligence Endpoint
+    Solve coding problems across multiple benchmarks
     """
+    
     try:
-        result = corporation.execute_benchmark(request)
+        STATE.increment_request()
+        
+        benchmark = task.benchmark.lower()
+        result = None
+        
+        # Route to appropriate solver
+        if benchmark == "humaneval":
+            result = STATE.agent.solve_humaneval(
+                prompt=task.problem,
+                test_code=task.test_cases[0] if task.test_cases else None
+            )
+        
+        elif benchmark == "mbpp":
+            result = STATE.agent.solve_mbpp(
+                task=task.problem,
+                test_cases=task.test_cases
+            )
+        
+        elif benchmark in ["swe_bench", "swebench"]:
+            result = STATE.agent.solve_swe_bench(
+                issue=task.problem,
+                repo_context=task.context or "",
+                current_code=task.test_cases[0] if task.test_cases else ""
+            )
+        
+        elif benchmark == "livebench":
+            result = STATE.agent.solve_livebench(
+                problem=task.problem,
+                test_cases=task.test_cases
+            )
+        
+        elif benchmark == "bigcodebench":
+            result = STATE.agent.solve_bigcodebench(
+                specification=task.problem,
+                requirements=task.test_cases
+            )
+        
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown benchmark: {benchmark}. Supported: humaneval, mbpp, swe_bench, livebench, bigcodebench"
+            )
         
         return {
-            "benchmark": request.benchmark,
-            "success": result.get('passed') or result.get('success', False),
+            "id": f"solve-{uuid.uuid4().hex[:16]}",
+            "benchmark": benchmark,
+            "problem": task.problem[:100] + "...",
             "result": result,
-            "timestamp": datetime.now().isoformat(),
-            "corporation": config.CORPORATION
+            "timestamp": datetime.utcnow().isoformat(),
+            "model": CONFIG.MODEL_NAME
         }
-    
+        
     except Exception as e:
-        corporation.stats['tasks_failed'] += 1
+        STATE.increment_request(success=False)
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/v1/agent/execute")
-async def execute_agent_task(
-    request: AgentTaskRequest,
+@app.post(f"/{CONFIG.API_VERSION}/coding/execute")
+async def execute_code(
+    request: CodeExecutionRequest,
     api_key: str = Depends(verify_api_key)
 ):
-    """
-    Execute multi-agent coordinated task
+    """Execute Python code safely"""
     
-    **Task Types**:
-    - code: Basic code generation
-    - optimize: Multi-stage optimized generation
-    - ensemble: Generate multiple solutions and vote
-    - test_driven: Test-driven development approach
-    """
     try:
-        result = corporation.execute_agent_task(request)
+        STATE.increment_request()
+        
+        executor = CodeExecutor()
+        result = executor.execute_python(
+            code=request.code,
+            test_code=request.test_code or "",
+            timeout=request.timeout
+        )
         
         return {
-            "task_type": request.task_type,
-            "success": True,
-            "result": result,
-            "timestamp": datetime.now().isoformat(),
-            "agents_involved": ["CodeArchitect", "AdvancedTechniques"]
+            "id": f"exec-{uuid.uuid4().hex[:16]}",
+            "execution": result,
+            "timestamp": datetime.utcnow().isoformat()
         }
-    
+        
     except Exception as e:
-        corporation.stats['tasks_failed'] += 1
+        STATE.increment_request(success=False)
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/v1/config")
-async def get_configuration(api_key: str = Depends(verify_api_key)):
-    """Get system configuration and performance targets"""
-    return {
-        "model": config.MODEL_NAME,
-        "performance_targets": {
-            "humaneval": f"{config.TARGET_HUMANEVAL*100:.0f}%",
-            "mbpp": f"{config.TARGET_MBPP*100:.0f}%",
-            "swe_bench": f"{config.TARGET_SWEBENCH*100:.0f}%",
-            "livebench": f"{config.TARGET_LIVEBENCH*100:.0f}%",
-            "bigcodebench": f"{config.TARGET_BIGCODEBENCH*100:.0f}%"
-        },
-        "benchmarks_available": [
-            "humaneval",
-            "mbpp",
-            "swe_bench",
-            "livebench",
-            "bigcodebench"
-        ]
-    }
+@app.post(f"/{CONFIG.API_VERSION}/coding/advanced/ensemble")
+async def advanced_ensemble(
+    task: CodingTask,
+    api_key: str = Depends(verify_api_key)
+):
+    """Advanced: Ensemble generation"""
+    
+    try:
+        STATE.increment_request()
+        
+        result = STATE.advanced.ensemble_generation(
+            problem=task.problem,
+            num_solutions=5,
+            test_cases=task.test_cases
+        )
+        
+        return {
+            "id": f"ensemble-{uuid.uuid4().hex[:16]}",
+            "result": result,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+    except Exception as e:
+        STATE.increment_request(success=False)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post(f"/{CONFIG.API_VERSION}/coding/advanced/test_driven")
+async def advanced_test_driven(
+    task: CodingTask,
+    api_key: str = Depends(verify_api_key)
+):
+    """Advanced: Test-driven development"""
+    
+    try:
+        STATE.increment_request()
+        
+        result = STATE.advanced.test_driven_generation(
+            specification=task.problem,
+            test_cases=task.test_cases or [],
+            max_attempts=5
+        )
+        
+        return {
+            "id": f"tdd-{uuid.uuid4().hex[:16]}",
+            "result": result,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+    except Exception as e:
+        STATE.increment_request(success=False)
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
 # NGROK SETUP
 # ============================================================================
 
-def setup_ngrok(port: int, auth_token: str) -> Optional[str]:
-    """Setup NGROK tunnel"""
+def setup_ngrok():
+    """Setup ngrok tunnel"""
     
-    if not auth_token or auth_token == "":
-        print("⚠️  WARNING: NGROK_AUTH_TOKEN not set")
-        print("Set it with: import os; os.environ['NGROK_AUTH_TOKEN'] = 'your_token'")
-        print("Get token from: https://dashboard.ngrok.com/get-started/your-authtoken")
+    if CONFIG.NGROK_TOKEN == "YOUR_NGROK_TOKEN":
+        print("\n⚠️  NGROK_TOKEN not set. Server will only be accessible locally.")
+        print("Set token: export NGROK_AUTH_TOKEN='your_token'")
+        print(f"Local URL: http://localhost:{CONFIG.PORT}")
         return None
     
     try:
-        ngrok.set_auth_token(auth_token)
-        public_url = ngrok.connect(port)
+        ngrok.set_auth_token(CONFIG.NGROK_TOKEN)
+        public_url = ngrok.connect(CONFIG.PORT, bind_tls=True)
         
-        print("\n" + "="*70)
-        print("🌐 NGROK TUNNEL ESTABLISHED")
-        print("="*70)
-        print(f"Public URL: {public_url}")
-        print(f"API Base: {public_url}/v1")
-        print(f"Documentation: {public_url}/api/docs")
-        print("="*70)
+        STATE.public_url = str(public_url)
         
-        corporation.public_url = str(public_url)
+        print("\n" + "="*80)
+        print("🌐 WB AI CORPORATION - PUBLIC ENDPOINT ACTIVE")
+        print("="*80)
+        print(f"🔗 Public URL: {STATE.public_url}")
+        print(f"📡 API Base: {STATE.public_url}/{CONFIG.API_VERSION}")
+        print(f"📚 Docs: {STATE.public_url}/docs")
+        print("="*80)
         
-        return str(public_url)
-    
+        return STATE.public_url
+        
     except Exception as e:
-        print(f"❌ NGROK Error: {e}")
+        print(f"\n⚠️  NGROK setup failed: {e}")
+        print(f"Server accessible locally: http://localhost:{CONFIG.PORT}")
         return None
 
 # ============================================================================
@@ -532,118 +591,57 @@ def run_server():
     """Run FastAPI server"""
     uvicorn.run(
         app,
-        host="0.0.0.0",
-        port=config.PORT,
-        log_level="info"
+        host=CONFIG.HOST,
+        port=CONFIG.PORT,
+        log_level="info",
+        access_log=True
     )
 
 # ============================================================================
 # MAIN EXECUTION
 # ============================================================================
 
-def main():
-    """Main execution"""
+if __name__ == "__main__":
     
-    print("\n" + "="*70)
-    print("🏢 WB AI CORPORATION - DEPLOYMENT SEQUENCE")
-    print("="*70)
-    print(f"Corporation: {config.CORPORATION}")
-    print(f"Version: {config.VERSION}")
-    print(f"Deployment: {config.DEPLOYMENT}")
-    print(f"Model: {config.MODEL_NAME}")
+    print("\n" + "="*80)
+    print("🏢 WB AI CORPORATION")
+    print("Quantum-Coder API - Operations Division")
+    print("="*80)
+    print(f"Deployment ID: {CONFIG.DEPLOYMENT_ID}")
+    print(f"Model: {CONFIG.MODEL_NAME}")
     print(f"GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'}")
-    print("="*70)
+    print("="*80)
     
     # Start server in background
-    print("\n📡 Operations Division: Starting API server...")
     server_thread = Thread(target=run_server, daemon=True)
     server_thread.start()
     
-    # Wait for server startup
-    time.sleep(5)
+    # Wait for startup
+    print("\n⏳ Starting server...")
+    time.sleep(8)
     
-    # Setup NGROK
-    print("\n🌐 Automation Hub: Establishing NGROK tunnel...")
-    public_url = setup_ngrok(config.PORT, config.NGROK_AUTH_TOKEN)
+    # Setup ngrok
+    public_url = setup_ngrok()
     
     # Display configuration
-    print("\n" + "="*70)
+    print("\n" + "="*80)
     print("📋 API CONFIGURATION")
-    print("="*70)
-    print(f"\n# WB AI Corporation API Configuration")
-    print(f"model_server: {public_url + '/v1' if public_url else 'http://localhost:' + str(config.PORT) + '/v1'}")
-    print(f"api_key: {config.API_KEY}")
-    print(f"model: {config.MODEL_NAME}")
-    print("\n" + "="*70)
+    print("="*80)
+    print(f"\n# Add these to your application:")
+    print(f"model_server = '{STATE.public_url}/{CONFIG.API_VERSION}' if STATE.public_url else 'http://localhost:{CONFIG.PORT}/{CONFIG.API_VERSION}'")
+    print(f"api_key = '{CONFIG.API_KEY}'")
+    print(f"model = '{CONFIG.MODEL_NAME}'")
+    print("\n" + "="*80)
     
-    # Display usage examples
-    print("\n📖 USAGE EXAMPLES")
-    print("="*70)
-    
-    if public_url:
-        print(f"""
-# Python Example
-import requests
-
-# Generate code
-response = requests.post(
-    "{public_url}/v1/code/generate",
-    headers={{"Authorization": "Bearer {config.API_KEY}"}},
-    json={{
-        "prompt": "Write a function to calculate fibonacci numbers",
-        "language": "python"
-    }}
-)
-print(response.json()["code"])
-
-# Solve HumanEval problem
-response = requests.post(
-    "{public_url}/v1/benchmark/solve",
-    headers={{"Authorization": "Bearer {config.API_KEY}"}},
-    json={{
-        "benchmark": "humaneval",
-        "problem": "def add(a, b):\\n    '''Add two numbers'''\\n    ",
-        "entry_point": "add"
-    }}
-)
-print(response.json())
-
-# Execute multi-agent task
-response = requests.post(
-    "{public_url}/v1/agent/execute",
-    headers={{"Authorization": "Bearer {config.API_KEY}"}},
-    json={{
-        "task_type": "ensemble",
-        "description": "Write a function to reverse a string"
-    }}
-)
-print(response.json())
-""")
-    
-    print("\n" + "="*70)
-    print("✅ WB AI CORPORATION - FULLY OPERATIONAL")
-    print("="*70)
-    print("\nSystem Status:")
-    print("  ✓ API Server: Running")
-    print("  ✓ Agents: Initialized")
-    print("  ✓ NGROK: " + ("Connected" if public_url else "Not configured"))
-    print("  ✓ Model: Loaded")
-    print("\nDepartments Active:")
-    print("  • CodeArchitect (Engineering Division)")
-    print("  • OpsManager (Operations Division)")
-    print("  • AutoBot (Automation Hub)")
-    print("  • AdvancedTechniques (Strategy Division)")
-    print("\n" + "="*70)
+    print("\n✅ WB AI Quantum-Coder API: OPERATIONAL")
+    print("🔒 Press Ctrl+C to shutdown")
     
     # Keep alive
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        print("\n\n🛑 Shutdown initiated...")
-        if public_url:
-            ngrok.disconnect(public_url)
-        print("✅ WB AI Corporation: Shutdown complete")
-
-if __name__ == "__main__":
-    main()
+        print("\n\n🛑 Shutdown initiated by operator")
+        if STATE.public_url:
+            ngrok.disconnect(STATE.public_url)
+        print("✅ Server stopped cleanly")
