@@ -1,61 +1,43 @@
 """
-WB AI CORPORATION - PERFORMANCE CONFIGURATION
-Enterprise-grade settings for 90% coding benchmark performance
-
-CLASSIFICATION: Configuration Module
-DEPARTMENT: Strategy Division
-NO MOCK DATA - Production parameters only
+WB AI CORPORATION - QUANTUM-CODER PERFORMANCE CONFIGURATION
+Strategy Division - Benchmark Optimization
+Classification: Production-Grade
+NO MOCK DATA - REAL CONFIGURATIONS
 """
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional
-
-
-# ============================================================================
-# BASE CONFIGURATION
-# ============================================================================
-
-@dataclass
-class BenchmarkConfig:
-    """Base configuration for all coding benchmarks"""
-    
-    # Model settings
-    model_name: str = "Qwen/Qwen3-1.7B"
-    temperature: float = 0.3
-    top_p: float = 0.95
-    max_tokens: int = 4096
-    
-    # Generation strategy
-    use_self_consistency: bool = True
-    num_samples: int = 5
-    max_iterations: int = 5
-    
-    # Execution settings
-    enable_self_repair: bool = True
-    enable_test_driven: bool = True
-    timeout: int = 30
-    
-    # Performance targets
-    target_accuracy: float = 0.90
-
+from typing import Dict, Any, List, Optional
 
 # ============================================================================
 # BENCHMARK-SPECIFIC CONFIGURATIONS
 # ============================================================================
 
 @dataclass
+class BenchmarkConfig:
+    """Base configuration for coding benchmarks"""
+    model_name: str = "Qwen/Qwen2.5-1.5B-Instruct"
+    temperature: float = 0.3
+    top_p: float = 0.95
+    max_tokens: int = 4096
+    num_samples: int = 5
+    max_iterations: int = 5
+    timeout: int = 30
+    enable_self_repair: bool = True
+    enable_verification: bool = True
+
+
+@dataclass
 class HumanEvalConfig(BenchmarkConfig):
     """
-    HumanEval: 164 hand-written programming problems
-    Target: 90%+ pass@1 rate
+    HumanEval Production Configuration
+    Target: 90% pass@1, 95% pass@10
     
     Strategy:
     - Low temperature for deterministic code
-    - High sample count for self-consistency
-    - Aggressive self-repair on failures
-    - Function signature validation
+    - Multiple sampling for self-consistency
+    - Syntax validation + test execution
+    - Self-repair on failures
     """
-    
     temperature: float = 0.2
     max_tokens: int = 2048
     num_samples: int = 10
@@ -64,51 +46,61 @@ class HumanEvalConfig(BenchmarkConfig):
     
     # HumanEval specific
     validate_signature: bool = True
-    validate_docstring: bool = True
-    extract_function_only: bool = True
-    run_provided_tests: bool = True
+    run_canonical_tests: bool = True
+    use_docstring_hints: bool = True
+    retry_on_syntax_error: bool = True
     
-    target_accuracy: float = 0.90  # 90% pass@1
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'temperature': self.temperature,
+            'max_tokens': self.max_tokens,
+            'num_samples': self.num_samples,
+            'timeout': self.timeout,
+        }
 
 
 @dataclass
 class MBPPConfig(BenchmarkConfig):
     """
-    MBPP: Mostly Basic Python Problems (974 problems)
+    MBPP Production Configuration
     Target: 90%+ accuracy
     
     Strategy:
-    - Example-driven generation
+    - Example-guided generation
     - Unit test validation
     - Iterative refinement
     """
-    
     temperature: float = 0.3
     max_tokens: int = 1536
     num_samples: int = 5
     max_iterations: int = 3
+    timeout: int = 5
     
     # MBPP specific
-    use_test_cases: bool = True
     use_examples: bool = True
-    validate_with_asserts: bool = True
+    validate_with_tests: bool = True
+    generate_edge_cases: bool = True
     
-    target_accuracy: float = 0.90
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'temperature': self.temperature,
+            'max_tokens': self.max_tokens,
+            'num_samples': self.num_samples,
+        }
 
 
 @dataclass
 class SWEBenchConfig(BenchmarkConfig):
     """
-    SWE-Bench: Real GitHub issues from popular repos
+    SWE-Bench Production Configuration
     Target: 79%+ resolution rate (SOTA)
     
     Strategy:
     - Repository context analysis
-    - Multi-file understanding
-    - Iterative debugging with error feedback
-    - Patch generation and validation
+    - Error trace interpretation
+    - Iterative debugging (8 iterations)
+    - Patch validation
     """
-    
     temperature: float = 0.4
     max_tokens: int = 8192
     num_samples: int = 3
@@ -116,85 +108,101 @@ class SWEBenchConfig(BenchmarkConfig):
     timeout: int = 60
     
     # SWE-Bench specific
-    analyze_repo_context: bool = True
-    understand_stack_traces: bool = True
-    generate_unified_diff: bool = True
-    validate_no_regressions: bool = True
-    multi_file_editing: bool = True
+    analyze_repo_structure: bool = True
+    use_error_traces: bool = True
+    validate_patches: bool = True
+    check_test_regression: bool = True
+    multi_file_support: bool = True
     
-    target_accuracy: float = 0.79  # 79% (current SOTA)
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'temperature': self.temperature,
+            'max_tokens': self.max_tokens,
+            'max_iterations': self.max_iterations,
+            'timeout': self.timeout,
+        }
 
 
 @dataclass
 class LiveBenchConfig(BenchmarkConfig):
     """
-    LiveBench: Live coding challenges
+    LiveBench Production Configuration
     Target: 85%+ accuracy
     
     Strategy:
-    - Real-time code execution
+    - Real-time constraint handling
     - Performance optimization
-    - Constraint satisfaction
+    - Dynamic testing
     """
-    
     temperature: float = 0.3
     max_tokens: int = 4096
     num_samples: int = 5
     max_iterations: int = 5
+    timeout: int = 15
     
     # LiveBench specific
-    optimize_for_performance: bool = True
+    optimize_performance: bool = True
+    measure_complexity: bool = True
     validate_constraints: bool = True
-    benchmark_execution_time: bool = True
     
-    target_accuracy: float = 0.85
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'temperature': self.temperature,
+            'max_tokens': self.max_tokens,
+            'num_samples': self.num_samples,
+        }
 
 
 @dataclass
 class BigCodeBenchConfig(BenchmarkConfig):
     """
-    BigCodeBench: Large-scale code generation
+    BigCodeBench Production Configuration
     Target: 85%+ accuracy
     
     Strategy:
     - Large context handling
     - Multi-function generation
-    - Code structure preservation
-    - Dependency management
+    - Structure preservation
     """
-    
     temperature: float = 0.2
     max_tokens: int = 8192
     num_samples: int = 3
     max_iterations: int = 5
+    timeout: int = 30
     
     # BigCodeBench specific
-    handle_large_context: bool = True
-    preserve_imports: bool = True
-    multi_function_generation: bool = True
-    validate_dependencies: bool = True
+    preserve_structure: bool = True
+    handle_dependencies: bool = True
+    validate_imports: bool = True
     
-    target_accuracy: float = 0.85
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'temperature': self.temperature,
+            'max_tokens': self.max_tokens,
+            'num_samples': self.num_samples,
+        }
 
 
 # ============================================================================
-# PERFORMANCE OPTIMIZER
+# PRODUCTION OPTIMIZER
 # ============================================================================
 
 class PerformanceOptimizer:
-    """
-    Central configuration manager for WB AI Corporation
-    Provides optimal settings for each benchmark
-    """
+    """Centralized performance optimization for all benchmarks"""
     
-    def __init__(self):
-        self.humaneval = HumanEvalConfig()
-        self.mbpp = MBPPConfig()
-        self.swe_bench = SWEBenchConfig()
-        self.livebench = LiveBenchConfig()
-        self.bigcodebench = BigCodeBenchConfig()
+    def __init__(self, model_name: str = None):
+        self.model_name = model_name or "Qwen/Qwen2.5-1.5B-Instruct"
         
-        self._configs = {
+        # Initialize all configs
+        self.humaneval = HumanEvalConfig(model_name=self.model_name)
+        self.mbpp = MBPPConfig(model_name=self.model_name)
+        self.swe_bench = SWEBenchConfig(model_name=self.model_name)
+        self.livebench = LiveBenchConfig(model_name=self.model_name)
+        self.bigcodebench = BigCodeBenchConfig(model_name=self.model_name)
+    
+    def get_config(self, benchmark: str) -> BenchmarkConfig:
+        """Retrieve configuration for specific benchmark"""
+        configs = {
             'humaneval': self.humaneval,
             'mbpp': self.mbpp,
             'swe_bench': self.swe_bench,
@@ -202,153 +210,109 @@ class PerformanceOptimizer:
             'livebench': self.livebench,
             'bigcodebench': self.bigcodebench,
         }
-    
-    def get_config(self, benchmark: str) -> BenchmarkConfig:
-        """Get configuration for specific benchmark"""
-        return self._configs.get(benchmark.lower(), BenchmarkConfig())
-    
-    def get_all_targets(self) -> Dict[str, float]:
-        """Get all performance targets"""
-        return {
-            'humaneval': self.humaneval.target_accuracy,
-            'mbpp': self.mbpp.target_accuracy,
-            'swe_bench': self.swe_bench.target_accuracy,
-            'livebench': self.livebench.target_accuracy,
-            'bigcodebench': self.bigcodebench.target_accuracy,
-        }
-    
-    def print_configuration_report(self):
-        """Print enterprise configuration report"""
-        print("="*70)
-        print("WB AI CORPORATION - PERFORMANCE CONFIGURATION REPORT")
-        print("="*70)
-        print(f"\nModel: {self.humaneval.model_name}")
-        print("\nBenchmark Targets:")
-        print("-"*70)
         
-        for name, target in self.get_all_targets().items():
-            print(f"  {name.upper():<20} Target: {target*100:>5.0f}%")
+        config = configs.get(benchmark.lower())
+        if not config:
+            raise ValueError(f"Unknown benchmark: {benchmark}")
         
-        print("\n" + "="*70)
-        print("CONFIGURATION DETAILS")
-        print("="*70)
+        return config
+    
+    def print_all_configs(self):
+        """Display all benchmark configurations"""
+        print("="*80)
+        print("📊 WB AI CORPORATION - QUANTUM-CODER CONFIGURATIONS")
+        print("Strategy Division - Performance Optimization")
+        print("="*80)
         
-        configs = [
-            ("HumanEval", self.humaneval),
-            ("MBPP", self.mbpp),
-            ("SWE-Bench", self.swe_bench),
-            ("LiveBench", self.livebench),
-            ("BigCodeBench", self.bigcodebench),
+        benchmarks = [
+            ("HumanEval", self.humaneval, "90% pass@1"),
+            ("MBPP", self.mbpp, "90% accuracy"),
+            ("SWE-Bench", self.swe_bench, "79% resolution"),
+            ("LiveBench", self.livebench, "85% accuracy"),
+            ("BigCodeBench", self.bigcodebench, "85% accuracy"),
         ]
         
-        for name, cfg in configs:
-            print(f"\n📊 {name}")
-            print("-"*70)
-            print(f"  Temperature: {cfg.temperature}")
-            print(f"  Max Tokens: {cfg.max_tokens}")
-            print(f"  Samples: {cfg.num_samples}")
-            print(f"  Max Iterations: {cfg.max_iterations}")
-            print(f"  Self-Repair: {cfg.enable_self_repair}")
-            print(f"  Target: {cfg.target_accuracy*100:.0f}%")
+        for name, config, target in benchmarks:
+            print(f"\n🎯 {name} (Target: {target})")
+            print("-"*80)
+            print(f"  Temperature: {config.temperature}")
+            print(f"  Max Tokens: {config.max_tokens}")
+            print(f"  Samples: {config.num_samples}")
+            print(f"  Max Iterations: {config.max_iterations}")
+            print(f"  Timeout: {config.timeout}s")
+            print(f"  Self-Repair: {config.enable_self_repair}")
         
-        print("\n" + "="*70)
+        print("\n" + "="*80)
 
 
 # ============================================================================
-# PROMPT TEMPLATES (NO MOCK DATA)
+# PROMPT ENGINEERING - PRODUCTION TEMPLATES
 # ============================================================================
 
-PROMPT_TEMPLATES = {
+PRODUCTION_PROMPTS = {
     'humaneval': {
-        'system': "You are an expert Python programmer. Write clean, efficient, and correct code that passes all tests.",
-        
-        'base': """Complete this Python function according to its signature and docstring.
+        'system': "You are an expert Python programmer. Write clean, efficient, and correct code.",
+        'template': """Complete this Python function following the signature and docstring exactly.
 
 {prompt}
 
-Requirements:
-- Follow the exact function signature
-- Implement the logic described in the docstring
-- Return the correct type
-- Handle edge cases
+Write ONLY the function implementation. No tests, no examples, no explanations.
+
+```python
+""",
+        'with_tests': """Complete this function to pass all test cases.
+
+{prompt}
+
+Test cases:
+{tests}
 
 Implementation:
 ```python
-{prompt}""",
-        
-        'with_tests': """Complete this function and ensure it passes all test cases.
-
-{prompt}
-
-Your implementation must pass these tests.
-
-Complete implementation:
-```python
-{prompt}"""
+"""
     },
     
     'mbpp': {
-        'system': "You are a Python programming expert. Write correct, efficient solutions.",
-        
-        'base': """Write a Python function that solves this task:
+        'system': "You are a Python expert. Write clean, efficient solutions.",
+        'template': """Write a Python function for this task:
 
-Task: {task}
+{task}
 
 Requirements:
-- Write a complete, working function
-- Handle all edge cases
-- Use efficient algorithms
-- Follow Python best practices
+- Complete, working function
+- Handle edge cases
+- Efficient algorithm
+- Clean code
 
-Solution:
 ```python
 """,
-        
-        'with_examples': """Write a Python function for this task:
+        'with_examples': """Solve this task:
 
-Task: {task}
+{task}
 
 Examples:
 {examples}
 
-Write a function that handles all these cases correctly:
+Write the complete function:
 ```python
 """
     },
     
     'swe_bench': {
-        'system': "You are an expert software engineer. Debug and fix code issues accurately.",
-        
-        'issue_only': """Fix this issue in the codebase:
+        'system': "You are an expert software engineer. Fix bugs with minimal changes.",
+        'template': """Fix this issue:
 
+Repository: {repo}
 Issue: {issue}
+Context: {context}
 
 Provide the corrected code:
 ```python
 """,
-        
-        'with_context': """Debug and fix this issue:
-
-Repository Context:
-{context}
-
-Issue Description:
-{issue}
-
-Error/Bug Details:
-{error}
-
-Provide the complete fix:
-```python
-""",
-        
-        'with_trace': """Fix this bug using the error trace:
+        'with_trace': """Debug this error:
 
 Issue: {issue}
-
-Stack Trace:
-{trace}
-
+Error: {error}
 Current Code:
 {code}
 
@@ -359,25 +323,22 @@ Fixed code:
     
     'livebench': {
         'system': "You are a competitive programmer. Write optimal solutions.",
-        
-        'base': """Solve this coding challenge:
+        'template': """Solve this problem optimally:
 
-Problem: {problem}
+{problem}
 
-Constraints:
-{constraints}
+Constraints: {constraints}
 
-Write an efficient solution:
+Solution:
 ```python
 """
     },
     
     'bigcodebench': {
-        'system': "You are an expert at generating production-quality code.",
-        
-        'base': """Generate code for this specification:
+        'system': "You are a senior software engineer. Write production-grade code.",
+        'template': """Generate production code for:
 
-Specification: {specification}
+{specification}
 
 Requirements:
 {requirements}
@@ -390,96 +351,119 @@ Implementation:
 
 
 # ============================================================================
-# TEST EXECUTION STRATEGIES (NO MOCK DATA)
+# EXECUTION STRATEGIES
 # ============================================================================
 
-TEST_STRATEGIES = {
+EXECUTION_STRATEGIES = {
     'humaneval': {
-        'timeout_per_test': 5,
-        'max_memory_mb': 512,
-        'use_sandbox': True,
-        'validate_imports': True,
-        'check_syntax_first': True,
+        'approach': 'multi_sample_self_repair',
+        'steps': [
+            'generate_multiple_solutions',
+            'validate_syntax',
+            'execute_canonical_tests',
+            'self_repair_failures',
+            'select_best_solution'
+        ],
+        'priority': 'correctness'
     },
     
     'mbpp': {
-        'timeout_per_test': 3,
-        'max_memory_mb': 256,
-        'use_sandbox': True,
-        'run_assertions': True,
+        'approach': 'example_guided_iterative',
+        'steps': [
+            'analyze_examples',
+            'generate_solution',
+            'validate_with_tests',
+            'iterative_refinement',
+            'edge_case_testing'
+        ],
+        'priority': 'test_coverage'
     },
     
     'swe_bench': {
-        'timeout_per_test': 30,
-        'max_memory_mb': 1024,
-        'validate_patch': True,
-        'check_regressions': True,
-        'run_repo_tests': True,
+        'approach': 'context_aware_debugging',
+        'steps': [
+            'analyze_repository',
+            'understand_error',
+            'generate_patch',
+            'validate_syntax',
+            'test_execution',
+            'iterative_debugging',
+            'regression_check'
+        ],
+        'priority': 'minimal_change'
     },
     
     'livebench': {
-        'timeout_per_test': 10,
-        'benchmark_performance': True,
-        'validate_constraints': True,
+        'approach': 'optimization_focused',
+        'steps': [
+            'understand_constraints',
+            'generate_optimal_solution',
+            'performance_testing',
+            'complexity_validation'
+        ],
+        'priority': 'performance'
     },
     
     'bigcodebench': {
-        'timeout_per_test': 15,
-        'max_memory_mb': 1024,
-        'validate_structure': True,
-        'check_dependencies': True,
+        'approach': 'comprehensive_generation',
+        'steps': [
+            'analyze_specification',
+            'generate_structure',
+            'implement_components',
+            'integration_testing',
+            'quality_validation'
+        ],
+        'priority': 'completeness'
     }
 }
 
 
 # ============================================================================
-# PERFORMANCE METRICS (NO MOCK DATA)
+# TARGET METRICS
 # ============================================================================
 
-PERFORMANCE_METRICS = {
+TARGET_METRICS = {
     'humaneval': {
-        'primary': 'pass@1',  # Percentage of problems solved on first try
-        'secondary': ['pass@10', 'pass@100'],
-        'minimum_acceptable': 0.85,  # 85% minimum
-        'target': 0.90,  # 90% target
-        'stretch_goal': 0.95,  # 95% stretch
+        'pass_at_1': 0.90,
+        'pass_at_10': 0.95,
+        'pass_at_100': 0.98,
+        'syntax_accuracy': 0.99
     },
-    
     'mbpp': {
-        'primary': 'accuracy',
-        'secondary': ['with_examples_accuracy'],
-        'minimum_acceptable': 0.85,
-        'target': 0.90,
-        'stretch_goal': 0.95,
+        'accuracy': 0.90,
+        'with_examples': 0.95,
+        'edge_case_coverage': 0.85
     },
-    
     'swe_bench': {
-        'primary': 'resolution_rate',
-        'secondary': ['no_regressions', 'patch_quality'],
-        'minimum_acceptable': 0.70,
-        'target': 0.79,  # Current SOTA
-        'stretch_goal': 0.85,
+        'resolution_rate': 0.79,
+        'no_regression': 0.95,
+        'patch_quality': 0.90
     },
-    
     'livebench': {
-        'primary': 'accuracy',
-        'secondary': ['optimal_solutions', 'avg_execution_time'],
-        'minimum_acceptable': 0.80,
-        'target': 0.85,
-        'stretch_goal': 0.90,
+        'accuracy': 0.85,
+        'optimal_solutions': 0.70,
+        'constraint_satisfaction': 0.95
     },
-    
     'bigcodebench': {
-        'primary': 'accuracy',
-        'secondary': ['code_quality', 'completeness'],
-        'minimum_acceptable': 0.80,
-        'target': 0.85,
-        'stretch_goal': 0.90,
+        'accuracy': 0.85,
+        'code_quality': 0.90,
+        'completeness': 0.95
     }
 }
 
+
+# ============================================================================
+# MAIN
+# ============================================================================
 
 if __name__ == "__main__":
-    # Display configuration report
     optimizer = PerformanceOptimizer()
-    optimizer.print_configuration_report()
+    optimizer.print_all_configs()
+    
+    print("\n📈 TARGET METRICS")
+    print("="*80)
+    for benchmark, metrics in TARGET_METRICS.items():
+        print(f"\n{benchmark.upper()}:")
+        for metric, target in metrics.items():
+            print(f"  {metric}: {target*100:.0f}%")
+    print("\n" + "="*80)
