@@ -67,7 +67,7 @@ class ServerConfig:
     """Production server configuration"""
     
     # Core Settings
-    MODEL_NAME = "Qwen/Qwen3-1.7B-Instruct"  # Update to your Qwen3-1.7B path
+    MODEL_NAME = "Qwen/Qwen3-1.7B"  # Update to your Qwen3-1.7B path
     PORT = 8000
     HOST = "0.0.0.0"
     
