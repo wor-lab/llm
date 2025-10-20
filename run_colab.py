@@ -1,281 +1,174 @@
-"""WB AI CORPORATION - QUANTUM-CODER API SERVER"""
-import subprocess
-import sys
+"""
+WB AI CORPORATION - Agentic RAG System
+Main Orchestrator for Google Colab Deployment
+═══════════════════════════════════════════════
+"""
+
 import os
+import sys
+import subprocess
+from pathlib import Path
+import threading
 import time
-import json
-import uuid
-from typing import Dict, Any, Optional
-from datetime import datetime
 
-print("="*80)
-print("🏢 WB AI CORPORATION - QUANTUM-CODER")
-print("="*80)
-
-DEPENDENCIES = ["fastapi", "uvicorn[standard]", "pyngrok", "transformers", "accelerate", "torch", "pydantic", "python-multipart", "sse-starlette"]
-print("\n📦 Installing dependencies...")
-for dep in DEPENDENCIES:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", dep], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-print("✅ Dependencies installed\n")
-
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
-from fastapi import FastAPI, HTTPException, Header, Depends, BackgroundTasks
-from fastapi.responses import JSONResponse, StreamingResponse
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
-from pyngrok import ngrok
-import uvicorn
-from threading import Thread
-from contextlib import asynccontextmanager
-import asyncio
-
-from agent_layer import CodingAgent, CodeExecutor
-from advanced_techniques import AdvancedCodingTechniques
-from performance_config import PerformanceOptimizer
-
-class ServerConfig:
-    MODEL_NAME = "Qwen/Qwen3-1.7B"
-    PORT = 8000
-    HOST = "0.0.0.0"
-    API_KEY_PREFIX = "sk-wb-ai-"
-    API_VERSION = "v1"
-    MAX_WORKERS = 4
-    TIMEOUT = 300
-    MAX_QUEUE_SIZE = 100
-    NGROK_TOKEN = os.getenv("NGROK_AUTH_TOKEN", "1vikehg18jsR9XrEzKEybCifEr9_AWWFzoCD58Xa151mXfLd")
-    API_KEY = f"{API_KEY_PREFIX}{uuid.uuid4().hex[:24]}"
-    COMPANY = "WB AI Corporation"
-    DIVISION = "Engineering Division - Coding Intelligence"
-    DEPLOYMENT_ID = f"qc-{uuid.uuid4().hex[:8]}"
-
-CONFIG = ServerConfig()
-
-class Message(BaseModel):
-    role: str
-    content: str
-
-class ChatCompletionRequest(BaseModel):
-    model: str
-    messages: list[Message]
-    temperature: Optional[float] = 0.3
-    top_p: Optional[float] = 0.95
-    max_tokens: Optional[int] = 4096
-    stream: Optional[bool] = False
-
-class CompletionRequest(BaseModel):
-    model: str
-    prompt: str
-    temperature: Optional[float] = 0.3
-    max_tokens: Optional[int] = 4096
-
-class CodingTask(BaseModel):
-    benchmark: str = Field(..., description="humaneval|mbpp|swe_bench|livebench|bigcodebench")
-    problem: str = Field(..., description="Problem description or code prompt")
-    test_cases: Optional[list] = None
-    context: Optional[str] = None
-    config_override: Optional[Dict[str, Any]] = None
-
-class CodeExecutionRequest(BaseModel):
-    code: str
-    test_code: Optional[str] = None
-    timeout: Optional[int] = 10
-
-class GlobalState:
+class WBOrchestrator:
+    """Central command for WB AI Corporation's Agentic RAG System"""
+    
     def __init__(self):
-        self.agent: Optional[CodingAgent] = None
-        self.advanced: Optional[AdvancedCodingTechniques] = None
-        self.optimizer: Optional[PerformanceOptimizer] = None
-        self.public_url: Optional[str] = None
-        self.startup_time: Optional[datetime] = None
-        self.request_count: int = 0
-        self.success_count: int = 0
-    def increment_request(self, success: bool = True):
-        self.request_count += 1
-        if success:
-            self.success_count += 1
-
-STATE = GlobalState()
-
-async def verify_api_key(authorization: str = Header(...)):
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Invalid authorization header format. Use: Bearer <api_key>")
-    token = authorization.replace("Bearer ", "")
-    if token != CONFIG.API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API key")
-    return token
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    print("\n🚀 Initializing WB AI Coding Agent...")
-    STATE.startup_time = datetime.utcnow()
-    try:
-        STATE.agent = CodingAgent(model_name=CONFIG.MODEL_NAME)
-        STATE.advanced = AdvancedCodingTechniques(STATE.agent)
-        STATE.optimizer = PerformanceOptimizer()
-        print("✅ Agent initialized successfully")
-        print(f"📊 Model: {CONFIG.MODEL_NAME}")
-        print(f"🔐 API Key: {CONFIG.API_KEY}")
-    except Exception as e:
-        print(f"❌ Failed to initialize agent: {e}")
-        raise
-    yield
-    print("\n🛑 Shutting down WB AI server...")
-    if STATE.public_url:
+        self.ngrok_token = os.getenv('NGROK_AUTH_TOKEN')
+        self.project_root = Path('/content/wb_ai_rag')
+        self.model_name = "Qwen/Qwen2.5-1.5B-Instruct"  # Using available Qwen model
+        self.api_base = None
+        self.api_key = "wb-ai-internal-key"
+        
+    def setup_environment(self):
+        """Install dependencies and configure environment"""
+        print("🏢 WB AI Corporation - System Initialization")
+        print("=" * 60)
+        
+        # Create project structure
+        self.project_root.mkdir(exist_ok=True)
+        os.chdir(self.project_root)
+        
+        # Install dependencies
+        dependencies = [
+            "langchain langchain-community langchain-openai",
+            "langgraph",
+            "chromadb",
+            "sentence-transformers",
+            "datasets",
+            "transformers torch accelerate bitsandbytes",
+            "pyngrok",
+            "fastapi uvicorn",
+            "tiktoken",
+            "openai"
+        ]
+        
+        print("\n📦 Installing production dependencies...")
+        for dep in dependencies:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", dep])
+        
+        print("✅ Environment configured\n")
+    
+    def configure_ngrok(self):
+        """Setup NGROK tunnel for model server"""
+        if not self.ngrok_token:
+            raise ValueError("❌ NGROK_AUTH_TOKEN not found in environment")
+        
+        from pyngrok import ngrok, conf
+        conf.get_default().auth_token = self.ngrok_token
+        print("✅ NGROK authenticated\n")
+    
+    def start_model_server(self):
+        """Launch Qwen3-1.7B server with NGROK tunnel"""
+        print("🚀 Launching Model Server (Qwen3-1.7B)...")
+        
+        # Start server in background thread
+        server_thread = threading.Thread(target=self._run_server, daemon=True)
+        server_thread.start()
+        
+        # Wait for server startup
+        time.sleep(10)
+        
+        # Create NGROK tunnel
+        from pyngrok import ngrok
+        tunnel = ngrok.connect(8000, bind_tls=True)
+        self.api_base = tunnel.public_url
+        
+        print(f"✅ Model Server Online")
+        print(f"📡 API Endpoint: {self.api_base}")
+        print(f"🔑 API Key: {self.api_key}\n")
+        
+        # Save configuration
+        with open('config.txt', 'w') as f:
+            f.write(f"API_BASE={self.api_base}\n")
+            f.write(f"API_KEY={self.api_key}\n")
+    
+    def _run_server(self):
+        """Internal server runner"""
+        from model_server import app
+        import uvicorn
+        uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")
+    
+    def initialize_data_pipeline(self):
+        """Load and embed code datasets into ChromaDB"""
+        print("📊 Initializing Data Pipeline...")
+        from data_pipeline import DataPipeline
+        
+        pipeline = DataPipeline()
+        pipeline.load_datasets()
+        pipeline.create_embeddings()
+        
+        print("✅ Data pipeline ready\n")
+    
+    def launch_agentic_rag(self):
+        """Start the multi-agent RAG system"""
+        print("🧠 Launching Agentic RAG System...")
+        from agentic_rag import AgenticRAG
+        
+        rag = AgenticRAG(
+            api_base=self.api_base,
+            api_key=self.api_key
+        )
+        
+        print("✅ Agentic RAG System Online\n")
+        return rag
+    
+    def run_demo(self, rag):
+        """Execute demonstration queries"""
+        print("=" * 60)
+        print("🎯 DEMO: Code Generation with Agentic RAG")
+        print("=" * 60)
+        
+        test_queries = [
+            "Write a Python function to implement binary search",
+            "Create a function to reverse a linked list in-place",
+            "Implement a function to check if a string is a valid palindrome"
+        ]
+        
+        for i, query in enumerate(test_queries, 1):
+            print(f"\n[QUERY {i}] {query}")
+            print("-" * 60)
+            
+            result = rag.execute(query)
+            
+            print(f"📝 Generated Code:\n{result['code']}\n")
+            print(f"⚡ Agent Path: {' → '.join(result['agent_path'])}")
+            print(f"📊 Evaluation Score: {result.get('score', 'N/A')}")
+            print("=" * 60)
+    
+    def execute(self):
+        """Main execution pipeline"""
         try:
-            ngrok.disconnect(STATE.public_url)
-        except:
-            pass
+            self.setup_environment()
+            self.configure_ngrok()
+            self.start_model_server()
+            self.initialize_data_pipeline()
+            
+            rag = self.launch_agentic_rag()
+            self.run_demo(rag)
+            
+            print("\n✅ WB AI Corporation - System Fully Operational")
+            print(f"📡 API Endpoint: {self.api_base}")
+            print("🔄 System ready for production queries\n")
+            
+            return rag
+            
+        except Exception as e:
+            print(f"❌ SYSTEM FAILURE: {e}")
+            raise
 
-app = FastAPI(title="WB AI Corporation - Quantum-Coder API", description="Enterprise-grade coding intelligence API powered by Qwen3-1.7B", version=CONFIG.API_VERSION, lifespan=lifespan)
 
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
-
-@app.get("/")
-async def root():
-    return {"company": CONFIG.COMPANY, "division": CONFIG.DIVISION, "deployment_id": CONFIG.DEPLOYMENT_ID, "status": "operational", "api_version": CONFIG.API_VERSION, "model": CONFIG.MODEL_NAME, "endpoints": {"chat": f"/{CONFIG.API_VERSION}/chat/completions", "completions": f"/{CONFIG.API_VERSION}/completions", "coding": f"/{CONFIG.API_VERSION}/coding/solve", "execute": f"/{CONFIG.API_VERSION}/coding/execute", "models": f"/{CONFIG.API_VERSION}/models", "health": "/health", "metrics": "/metrics"}, "documentation": f"{STATE.public_url}/docs" if STATE.public_url else "/docs"}
-
-@app.get("/health")
-async def health():
-    return {"status": "healthy", "agent_loaded": STATE.agent is not None, "gpu_available": torch.cuda.is_available(), "gpu_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None, "uptime_seconds": (datetime.utcnow() - STATE.startup_time).total_seconds() if STATE.startup_time else 0, "requests_total": STATE.request_count, "requests_successful": STATE.success_count, "success_rate": STATE.success_count / STATE.request_count if STATE.request_count > 0 else 0}
-
-@app.get("/metrics")
-async def metrics(api_key: str = Depends(verify_api_key)):
-    return {"deployment": {"id": CONFIG.DEPLOYMENT_ID, "model": CONFIG.MODEL_NAME, "startup_time": STATE.startup_time.isoformat() if STATE.startup_time else None}, "performance": {"total_requests": STATE.request_count, "successful_requests": STATE.success_count, "failed_requests": STATE.request_count - STATE.success_count, "success_rate": f"{(STATE.success_count / STATE.request_count * 100):.2f}%" if STATE.request_count > 0 else "0%"}, "system": {"gpu_available": torch.cuda.is_available(), "gpu_memory_allocated": f"{torch.cuda.memory_allocated() / 1e9:.2f} GB" if torch.cuda.is_available() else None, "gpu_memory_reserved": f"{torch.cuda.memory_reserved() / 1e9:.2f} GB" if torch.cuda.is_available() else None}}
-
-@app.get(f"/{CONFIG.API_VERSION}/models")
-async def list_models(api_key: str = Depends(verify_api_key)):
-    return {"object": "list", "data": [{"id": CONFIG.MODEL_NAME, "object": "model", "created": int(STATE.startup_time.timestamp()) if STATE.startup_time else int(time.time()), "owned_by": CONFIG.COMPANY, "permission": [], "root": CONFIG.MODEL_NAME, "parent": None}]}
-
-@app.post(f"/{CONFIG.API_VERSION}/chat/completions")
-async def chat_completions(request: ChatCompletionRequest, api_key: str = Depends(verify_api_key)):
-    try:
-        STATE.increment_request()
-        messages = [{"role": msg.role, "content": msg.content} for msg in request.messages]
-        response = STATE.agent.generate(STATE.agent.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True), temperature=request.temperature, max_tokens=request.max_tokens, top_p=request.top_p)
-        return {"id": f"chatcmpl-{uuid.uuid4().hex[:24]}", "object": "chat.completion", "created": int(time.time()), "model": request.model, "choices": [{"index": 0, "message": {"role": "assistant", "content": response}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}}
-    except Exception as e:
-        STATE.increment_request(success=False)
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post(f"/{CONFIG.API_VERSION}/completions")
-async def completions(request: CompletionRequest, api_key: str = Depends(verify_api_key)):
-    try:
-        STATE.increment_request()
-        response = STATE.agent.generate(request.prompt, temperature=request.temperature, max_tokens=request.max_tokens)
-        return {"id": f"cmpl-{uuid.uuid4().hex[:24]}", "object": "text_completion", "created": int(time.time()), "model": request.model, "choices": [{"text": response, "index": 0, "finish_reason": "stop"}], "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}}
-    except Exception as e:
-        STATE.increment_request(success=False)
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post(f"/{CONFIG.API_VERSION}/coding/solve")
-async def solve_coding_task(task: CodingTask, api_key: str = Depends(verify_api_key)):
-    try:
-        STATE.increment_request()
-        benchmark = task.benchmark.lower()
-        result = None
-        if benchmark == "humaneval":
-            result = STATE.agent.solve_humaneval(prompt=task.problem, test_code=task.test_cases[0] if task.test_cases else None)
-        elif benchmark == "mbpp":
-            result = STATE.agent.solve_mbpp(task=task.problem, test_cases=task.test_cases)
-        elif benchmark in ["swe_bench", "swebench"]:
-            result = STATE.agent.solve_swe_bench(issue=task.problem, repo_context=task.context or "", current_code=task.test_cases[0] if task.test_cases else "")
-        elif benchmark == "livebench":
-            result = STATE.agent.solve_livebench(problem=task.problem, test_cases=task.test_cases)
-        elif benchmark == "bigcodebench":
-            result = STATE.agent.solve_bigcodebench(specification=task.problem, requirements=task.test_cases)
-        else:
-            raise HTTPException(status_code=400, detail=f"Unknown benchmark: {benchmark}. Supported: humaneval, mbpp, swe_bench, livebench, bigcodebench")
-        return {"id": f"solve-{uuid.uuid4().hex[:16]}", "benchmark": benchmark, "problem": task.problem[:100] + "...", "result": result, "timestamp": datetime.utcnow().isoformat(), "model": CONFIG.MODEL_NAME}
-    except Exception as e:
-        STATE.increment_request(success=False)
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post(f"/{CONFIG.API_VERSION}/coding/execute")
-async def execute_code(request: CodeExecutionRequest, api_key: str = Depends(verify_api_key)):
-    try:
-        STATE.increment_request()
-        executor = CodeExecutor()
-        result = executor.execute_python(code=request.code, test_code=request.test_code or "", timeout=request.timeout)
-        return {"id": f"exec-{uuid.uuid4().hex[:16]}", "execution": result, "timestamp": datetime.utcnow().isoformat()}
-    except Exception as e:
-        STATE.increment_request(success=False)
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post(f"/{CONFIG.API_VERSION}/coding/advanced/ensemble")
-async def advanced_ensemble(task: CodingTask, api_key: str = Depends(verify_api_key)):
-    try:
-        STATE.increment_request()
-        result = STATE.advanced.ensemble_generation(problem=task.problem, num_solutions=5, test_cases=task.test_cases)
-        return {"id": f"ensemble-{uuid.uuid4().hex[:16]}", "result": result, "timestamp": datetime.utcnow().isoformat()}
-    except Exception as e:
-        STATE.increment_request(success=False)
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post(f"/{CONFIG.API_VERSION}/coding/advanced/test_driven")
-async def advanced_test_driven(task: CodingTask, api_key: str = Depends(verify_api_key)):
-    try:
-        STATE.increment_request()
-        result = STATE.advanced.test_driven_generation(specification=task.problem, test_cases=task.test_cases or [], max_attempts=5)
-        return {"id": f"tdd-{uuid.uuid4().hex[:16]}", "result": result, "timestamp": datetime.utcnow().isoformat()}
-    except Exception as e:
-        STATE.increment_request(success=False)
-        raise HTTPException(status_code=500, detail=str(e))
-
-def setup_ngrok():
-    if CONFIG.NGROK_TOKEN == "YOUR_NGROK_TOKEN":
-        print("\n⚠️  NGROK_TOKEN not set. Server will only be accessible locally.")
-        print("Set token: export NGROK_AUTH_TOKEN='your_token'")
-        print(f"Local URL: http://localhost:{CONFIG.PORT}")
-        return None
-    try:
-        ngrok.set_auth_token(CONFIG.NGROK_TOKEN)
-        public_url = ngrok.connect(CONFIG.PORT, bind_tls=True)
-        STATE.public_url = str(public_url)
-        print("\n" + "="*80)
-        print("🌐 WB AI CORPORATION - PUBLIC ENDPOINT ACTIVE")
-        print("="*80)
-        print(f"🔗 Public URL: {STATE.public_url}")
-        print(f"📡 API Base: {STATE.public_url}/{CONFIG.API_VERSION}")
-        print(f"📚 Docs: {STATE.public_url}/docs")
-        print("="*80)
-        return STATE.public_url
-    except Exception as e:
-        print(f"\n⚠️  NGROK setup failed: {e}")
-        print(f"Server accessible locally: http://localhost:{CONFIG.PORT}")
-        return None
-
-def run_server():
-    uvicorn.run(app, host=CONFIG.HOST, port=CONFIG.PORT, log_level="info", access_log=True)
+# ═══════════════════════════════════════════════
+# EXECUTION ENTRY POINT
+# ═══════════════════════════════════════════════
 
 if __name__ == "__main__":
-    print("\n" + "="*80)
-    print("🏢 WB AI CORPORATION")
-    print("Quantum-Coder API - Operations Division")
-    print("="*80)
-    print(f"Deployment ID: {CONFIG.DEPLOYMENT_ID}")
-    print(f"Model: {CONFIG.MODEL_NAME}")
-    print(f"GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'}")
-    print("="*80)
-    server_thread = Thread(target=run_server, daemon=True)
-    server_thread.start()
-    print("\n⏳ Starting server...")
-    time.sleep(8)
-    public_url = setup_ngrok()
-    print("\n" + "="*80)
-    print("📋 API CONFIGURATION")
-    print("="*80)
-    print(f"\nmodel_server = '{STATE.public_url}/{CONFIG.API_VERSION}' if STATE.public_url else 'http://localhost:{CONFIG.PORT}/{CONFIG.API_VERSION}'")
-    print(f"api_key = '{CONFIG.API_KEY}'")
-    print(f"model = '{CONFIG.MODEL_NAME}'")
-    print("\n" + "="*80)
-    print("\n✅ WB AI Quantum-Coder API: OPERATIONAL")
-    print("🔒 Press Ctrl+C to shutdown")
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("\n\n🛑 Shutdown initiated by operator")
-        if STATE.public_url:
-            ngrok.disconnect(STATE.public_url)
-        print("✅ Server stopped cleanly")
+    # Set NGROK token (replace with your token)
+    # os.environ['NGROK_AUTH_TOKEN'] = 'your_token_here'
+    
+    orchestrator = WBOrchestrator()
+    rag_system = orchestrator.execute()
+    
+    # Keep system running for interactive queries
+    print("\n💡 System ready. Use rag_system.execute(your_query) for custom queries")
