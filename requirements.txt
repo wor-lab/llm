@@ -1,0 +1,21 @@
+# Core AI & Graph Frameworks
+langchain
+langgraph
+langchain_community
+langchain_core
+langchain_huggingface
+
+# Vector Database & Embeddings
+chromadb
+sentence-transformers
+
+# API & Server
+fastapi
+uvicorn
+
+# Environment & Utilities
+python-dotenv
+pyngrok
+datasets
+huggingface_hub
+tqdm
