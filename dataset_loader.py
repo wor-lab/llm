@@ -1,128 +1,186 @@
-"""
-WB AI Corporation - Dataset Ingestion Module
-Agent: DataSynth
-Purpose: Load, process, and vectorize code datasets into ChromaDB
-"""
-
 import os
-from typing import List, Dict, Any
-from datasets import load_dataset
+import json
+from typing import Dict, Iterable, List, Optional, Tuple
+from datasets import load_dataset, IterableDataset, DatasetDict
 from langchain_community.vectorstores import Chroma
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.schema import Document
-from loguru import logger
-from dotenv import load_dotenv
-
-load_dotenv()
+from tqdm import tqdm
 
 
-class DatasetLoader:
-    """Enterprise-grade dataset ingestion pipeline"""
-    
-    DATASET_CONFIGS = [
-        {"name": "princeton-nlp/SWE-bench_Verified", "split": "test", "text_field": "problem_statement"},
-        {"name": "openai/humaneval", "split": "test", "text_field": "prompt"},
-        {"name": "mbpp", "split": "test", "text_field": "text"},
-        {"name": "bigcode/bigcodebench", "split": "v0.1.0_hf", "text_field": "instruct_prompt"},
-        {"name": "livecodebench/code_generation_lite", "split": "test", "text_field": "question_content"},
-    ]
-    
-    def __init__(self):
-        self.persist_dir = os.getenv("CHROMA_PERSIST_DIR", "./chroma_db")
-        self.embedding_model = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
-        self.max_samples = int(os.getenv("MAX_SAMPLES_PER_DATASET", 500))
-        self.embeddings = HuggingFaceEmbeddings(model_name=self.embedding_model)
-        logger.info(f"DatasetLoader initialized | Persist: {self.persist_dir}")
-    
-    def load_and_process(self) -> Chroma:
-        """Load all datasets and create vector store"""
-        all_documents = []
-        
-        for config in self.DATASET_CONFIGS:
-            docs = self._load_single_dataset(config)
-            all_documents.extend(docs)
-            logger.info(f"Loaded {len(docs)} documents from {config['name']}")
-        
-        logger.info(f"Total documents: {len(all_documents)} | Creating vector store...")
-        
-        vectorstore = Chroma.from_documents(
-            documents=all_documents,
-            embedding=self.embeddings,
-            persist_directory=self.persist_dir,
-            collection_name="wb_code_intelligence"
-        )
-        
-        logger.success(f"Vector store created | Documents: {len(all_documents)}")
-        return vectorstore
-    
-    def _load_single_dataset(self, config: Dict[str, str]) -> List[Document]:
-        """Load and convert single dataset to LangChain documents"""
-        documents = []
-        
+DEFAULT_DATASETS = [
+    "princeton-nlp/SWE-bench_Verified",
+    "zai-org/humaneval-x",
+    "Muennighoff/mbpp",
+    "bigcode/bigcodebench",
+    "microsoft/rStar-Coder",
+    "bigcode/the-stack-v2",
+    "livecodebench/code_generation_lite",
+]
+
+
+def _get_env(name: str, default: Optional[str] = None) -> str:
+    v = os.getenv(name, default)
+    if v is None:
+        raise RuntimeError(f"Missing required environment variable: {name}")
+    return v
+
+
+def _ensure_dir(path: str):
+    os.makedirs(path, exist_ok=True)
+
+
+def _try_load_streaming(name: str, split_candidates: List[str]) -> Tuple[Optional[IterableDataset], Optional[str]]:
+    for split in split_candidates:
         try:
-            dataset = load_dataset(
-                config["name"],
-                split=config["split"],
-                trust_remote_code=True
-            )
-            
-            # Handle dataset size
-            dataset = dataset.select(range(min(len(dataset), self.max_samples)))
-            
-            for idx, item in enumerate(dataset):
-                # Extract text based on dataset structure
-                text_content = self._extract_text(item, config)
-                
-                if text_content:
-                    doc = Document(
-                        page_content=text_content,
-                        metadata={
-                            "source": config["name"],
-                            "index": idx,
-                            "dataset_type": "code_benchmark"
-                        }
-                    )
-                    documents.append(doc)
-            
-        except Exception as e:
-            logger.warning(f"Failed to load {config['name']}: {e}")
-        
-        return documents
-    
-    def _extract_text(self, item: Dict[str, Any], config: Dict[str, str]) -> str:
-        """Extract text content from dataset item"""
-        text_field = config.get("text_field", "prompt")
-        
-        # Try primary field
-        if text_field in item:
-            return str(item[text_field])
-        
-        # Fallback strategies
-        fallback_fields = ["prompt", "text", "question", "problem_statement", "instruction"]
-        for field in fallback_fields:
-            if field in item:
-                return str(item[field])
-        
-        # Last resort: combine all string fields
-        text_parts = [str(v) for v in item.values() if isinstance(v, str)]
-        return " ".join(text_parts) if text_parts else ""
-    
-    def load_existing(self) -> Chroma:
-        """Load existing vector store"""
-        if not os.path.exists(self.persist_dir):
-            raise FileNotFoundError(f"Vector store not found at {self.persist_dir}")
-        
-        vectorstore = Chroma(
-            persist_directory=self.persist_dir,
-            embedding_function=self.embeddings,
-            collection_name="wb_code_intelligence"
-        )
-        
-        logger.info("Loaded existing vector store")
-        return vectorstore
+            ds = load_dataset(name, split=split, streaming=True)
+            return ds, split
+        except Exception:
+            continue
+    return None, None
 
 
-if __name__ == "__main__":
-    loader = DatasetLoader()
-    vectorstore = loader.load_and_process()
-    logger.success("Dataset loading complete")
+def _try_load_disk(name: str, split_candidates: List[str]) -> Tuple[Optional[IterableDataset], Optional[str]]:
+    for split in split_candidates:
+        try:
+            ds = load_dataset(name, split=split)
+            return ds, split
+        except Exception:
+            continue
+    return None, None
+
+
+def _iter_dataset(name: str, max_samples: int) -> Iterable[Dict]:
+    split_candidates = ["train", "test", "validation", "dev", "all"]
+
+    # Prefer streaming to avoid huge memory/disk pulls
+    ds, used_split = _try_load_streaming(name, split_candidates)
+    if ds is None:
+        ds, used_split = _try_load_disk(name, split_candidates)
+    if ds is None:
+        raise RuntimeError(f"Failed to load dataset: {name}")
+
+    count = 0
+    for ex in ds:
+        yield ex
+        count += 1
+        if count >= max_samples:
+            break
+
+
+KEY_PRIORITY = [
+    "prompt", "problem", "question", "description", "text", "docstring", "instruction",
+    "title", "body", "context", "repo", "language", "task_id",
+    "code", "canonical_solution", "solution", "solutions", "ground_truth", "reference_solution",
+    "diff", "patch", "unit_tests", "tests", "test", "entry_point",
+]
+
+
+def _extract_text_blob(dataset_name: str, sample: Dict) -> Tuple[str, Dict]:
+    selected = []
+    for k in KEY_PRIORITY:
+        if k in sample and sample[k] is not None:
+            try:
+                v = sample[k]
+                if isinstance(v, (list, tuple)):
+                    v = "\n".join([str(x) for x in v])
+                elif isinstance(v, dict):
+                    v = json.dumps(v, ensure_ascii=False)
+                else:
+                    v = str(v)
+                if v.strip():
+                    selected.append(f"{k.upper()}:\n{v}")
+            except Exception:
+                continue
+
+    # Fallback: include any additional short scalar strings for recall
+    if not selected:
+        for k, v in sample.items():
+            try:
+                if isinstance(v, str) and v.strip():
+                    selected.append(f"{k.upper()}:\n{v}")
+            except Exception:
+                continue
+
+    content = "\n\n".join(selected).strip()
+    metadata = {
+        "dataset": dataset_name,
+        "keys": [k for k in sample.keys()],
+        "has_code": any(kk in sample for kk in ["code", "solution", "canonical_solution"]),
+    }
+    return content, metadata
+
+
+def build_text_splitter() -> RecursiveCharacterTextSplitter:
+    return RecursiveCharacterTextSplitter(
+        chunk_size=1200,
+        chunk_overlap=120,
+        separators=[
+            "\nclass ", "\ndef ", "\n#", "\n\n", "\n", " ", "",
+        ],
+        length_function=len,
+        is_separator_regex=False,
+    )
+
+
+def get_embeddings(model_name: str) -> HuggingFaceEmbeddings:
+    return HuggingFaceEmbeddings(
+        model_name=model_name,
+        encode_kwargs={"normalize_embeddings": True, "batch_size": 64},
+        multi_process=False,
+    )
+
+
+def load_and_index_datasets(
+    chroma_dir: str,
+    embedding_model: str,
+    datasets: Optional[List[str]] = None,
+    max_samples_per_dataset: int = 500,
+    collection_name: str = "code-corpus",
+) -> Chroma:
+    datasets = datasets or DEFAULT_DATASETS
+    _ensure_dir(chroma_dir)
+
+    embeddings = get_embeddings(embedding_model)
+    vectordb = Chroma(collection_name=collection_name, embedding_function=embeddings, persist_directory=chroma_dir)
+
+    splitter = build_text_splitter()
+
+    for dname in datasets:
+        texts: List[str] = []
+        metadatas: List[Dict] = []
+        ids: List[str] = []
+        i = 0
+
+        for sample in tqdm(_iter_dataset(dname, max_samples_per_dataset), desc=f"Ingest {dname}"):
+            try:
+                blob, meta = _extract_text_blob(dname, sample)
+                if not blob:
+                    continue
+
+                chunks = splitter.split_text(blob)
+                for idx, ch in enumerate(chunks):
+                    texts.append(ch)
+                    md = dict(meta)
+                    md["chunk_idx"] = idx
+                    md["sample_idx"] = i
+                    metadatas.append(md)
+                    ids.append(f"{dname}::s{i}::c{idx}")
+
+                i += 1
+
+                if len(texts) >= 512:  # batch write
+                    vectordb.add_texts(texts=texts, metadatas=metadatas, ids=ids)
+                    texts, metadatas, ids = [], [], []
+
+            except Exception:
+                # Skip malformed samples silently
+                continue
+
+        if texts:
+            vectordb.add_texts(texts=texts, metadatas=metadatas, ids=ids)
+
+        vectordb.persist()
+
+    return vectordb
