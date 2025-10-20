@@ -20,7 +20,7 @@ app = FastAPI(title="WB AI Model Server", version="1.0")
 
 class ModelServer:
     def __init__(self):
-        self.model_name = "Qwen/Qwen2.5-1.5B-Instruct"
+        self.model_name = "Qwen/Qwen3-1.7B"
         self.api_key = "wb-ai-internal-key"
         self.model = None
         self.tokenizer = None
