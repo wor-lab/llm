@@ -2,33 +2,33 @@
 # Code Intelligence RAG Stack
 
 # Core Framework
-langchain==0.1.20
-langchain-community==0.0.38
-langchain-huggingface==0.0.3
+langchain
+langchain-community
+langchain-huggingface
 langgraph==0.0.55
 
 # Vector Database
-chromadb==0.4.24
-sentence-transformers==2.6.1
+chromadb
+sentence-transformers
 
 # Data Processing
-datasets==2.19.0
-transformers==4.40.0
-accelerate==0.29.3
-torch==2.2.2
+datasets
+transformers
+accelerate
+torch
 
 # API Layer
-fastapi==0.110.2
-uvicorn[standard]==0.29.0
-pydantic==2.7.0
-pydantic-settings==2.2.1
-python-multipart==0.0.9
+fastapi
+uvicorn
+pydantic
+pydantic-settings
+python-multipart
 
 # Utilities
-python-dotenv==1.0.1
-httpx==0.27.0
-pyngrok==7.1.5
-tenacity==8.2.3
+python-dotenv
+httpx
+pyngrok
+tenacity
 
 # Monitoring
-loguru==0.7.2
+loguru
