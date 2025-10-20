@@ -1,66 +1,133 @@
-# rag_pipeline.py
-from langchain_community.vectorstores import Chroma
-from langchain_core.runnables import RunnablePassthrough
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
+"""
+WB AI Corporation - RAG Pipeline Module
+Agent: CodeArchitect
+Purpose: Implement retrieval-augmented generation for code intelligence
+"""
+
+import os
+from typing import List, Dict, Any
 from langchain_huggingface import HuggingFaceEndpoint
+from langchain.chains import RetrievalQA
+from langchain.prompts import PromptTemplate
+from langchain_community.vectorstores import Chroma
+from loguru import logger
+from dotenv import load_dotenv
 
-# --- Configuration ---
-# Match the config from dataset_loader.py
-EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-CHROMA_DB_PATH = "./chroma_db"
-COLLECTION_NAME = "code_assistant_knowledge"
+load_dotenv()
 
-# API configuration for the LLM
-# IMPORTANT: This assumes a local server is running, which will be started by api_server.py
-# We will use the HuggingFaceEndpoint class to interface with it.
-LLM_API_URL = "http://127.0.0.1:8001" 
-HF_TOKEN = "your_huggingface_token_here" # Required for some models, even if self-hosted
 
-def get_rag_chain():
-    """Constructs and returns the complete RAG chain."""
+class RAGPipeline:
+    """Production RAG system for code intelligence"""
     
-    # 1. Initialize the embedding model for the retriever
-    embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
+    SYSTEM_PROMPT = """You are WB AI Code Intelligence Assistant - an expert code analysis and generation system.
 
-    # 2. Connect to the existing ChromaDB collection
-    vectorstore = Chroma(
-        collection_name=COLLECTION_NAME,
-        persist_directory=CHROMA_DB_PATH,
-        embedding_function=embeddings
-    )
-    retriever = vectorstore.as_retriever(search_kwargs={'k': 5}) # Retrieve top 5 documents
+Context from knowledge base:
+{context}
 
-    # 3. Define the prompt template
-    template = """
-    You are an expert programmer and code assistant. Use the following retrieved context to answer the user's question.
-    If you don't know the answer from the context, state that you do not have enough information.
-    Provide concise, accurate, and code-centric answers.
+User Query: {question}
 
-    CONTEXT:
-    {context}
+Instructions:
+- Provide precise, executable code solutions
+- Reference relevant examples from context
+- Follow best practices and enterprise standards
+- Include brief explanations for complex logic
 
-    QUESTION:
-    {question}
+Response:"""
+    
+    def __init__(self, vectorstore: Chroma):
+        self.vectorstore = vectorstore
+        self.model_server = os.getenv("MODEL_SERVER")
+        self.api_key = os.getenv("HF_API_KEY")
+        self.temperature = float(os.getenv("TEMPERATURE", 0.7))
+        self.top_k = int(os.getenv("TOP_K_RESULTS", 5))
+        self.max_length = int(os.getenv("MAX_CONTEXT_LENGTH", 2048))
+        
+        # Initialize LLM
+        self.llm = HuggingFaceEndpoint(
+            endpoint_url=self.model_server,
+            huggingfacehub_api_token=self.api_key,
+            task="text-generation",
+            model_kwargs={
+                "temperature": self.temperature,
+                "max_new_tokens": 512,
+                "return_full_text": False,
+            }
+        )
+        
+        # Setup retrieval chain
+        self.retriever = self.vectorstore.as_retriever(
+            search_type="similarity",
+            search_kwargs={"k": self.top_k}
+        )
+        
+        self.prompt = PromptTemplate(
+            template=self.SYSTEM_PROMPT,
+            input_variables=["context", "question"]
+        )
+        
+        self.qa_chain = RetrievalQA.from_chain_type(
+            llm=self.llm,
+            chain_type="stuff",
+            retriever=self.retriever,
+            return_source_documents=True,
+            chain_type_kwargs={"prompt": self.prompt}
+        )
+        
+        logger.info("RAG Pipeline initialized | Model: Qwen3-1.7B")
+    
+    def query(self, question: str) -> Dict[str, Any]:
+        """Execute RAG query"""
+        logger.info(f"Processing query: {question[:100]}...")
+        
+        try:
+            result = self.qa_chain.invoke({"query": question})
+            
+            response = {
+                "answer": result["result"],
+                "sources": [
+                    {
+                        "content": doc.page_content[:200],
+                        "metadata": doc.metadata
+                    }
+                    for doc in result["source_documents"]
+                ],
+                "status": "success"
+            }
+            
+            logger.success("Query processed successfully")
+            return response
+            
+        except Exception as e:
+            logger.error(f"Query failed: {e}")
+            return {
+                "answer": f"Error processing query: {str(e)}",
+                "sources": [],
+                "status": "error"
+            }
+    
+    def retrieve_context(self, query: str, k: int = None) -> List[Dict[str, Any]]:
+        """Retrieve relevant documents without generation"""
+        k = k or self.top_k
+        docs = self.retriever.get_relevant_documents(query)[:k]
+        
+        return [
+            {
+                "content": doc.page_content,
+                "metadata": doc.metadata,
+                "relevance_score": idx
+            }
+            for idx, doc in enumerate(docs)
+        ]
 
-    ANSWER:
-    """
-    prompt = ChatPromptTemplate.from_template(template)
 
-    # 4. Initialize the LLM via its API endpoint
-    llm = HuggingFaceEndpoint(
-        endpoint_url=LLM_API_URL,
-        huggingfacehub_api_token=HF_TOKEN,
-        task="text-generation",
-        model_kwargs={"max_new_tokens": 512}
-    )
-
-    # 5. Build the RAG chain using LangChain Expression Language (LCEL)
-    rag_chain = (
-        {"context": retriever, "question": RunnablePassthrough()}
-        | prompt
-        | llm
-        | StrOutputParser()
-    )
-
-    return rag_chain
+if __name__ == "__main__":
+    from dataset_loader import DatasetLoader
+    
+    loader = DatasetLoader()
+    vectorstore = loader.load_existing()
+    
+    pipeline = RAGPipeline(vectorstore)
+    result = pipeline.query("Write a Python function to reverse a linked list")
+    
+    print(f"Answer: {result['answer']}")
+    print(f"Sources: {len(result['sources'])}")
