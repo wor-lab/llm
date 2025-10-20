@@ -15,9 +15,9 @@ class WBOrchestrator:
     """Central command for WB AI Corporation's Agentic RAG System"""
     
     def __init__(self):
-        self.ngrok_token = os.getenv('NGROK_AUTH_TOKEN')
-        self.project_root = Path('/content/wb_ai_rag')
-        self.model_name = "Qwen/Qwen2.5-1.5B-Instruct"  # Using available Qwen model
+        self.ngrok_token = os.getenv('1vikehg18jsR9XrEzKEybCifEr9_AWWFzoCD58Xa151mXfLd')
+        self.project_root = Path('/')
+        self.model_name = "Qwen/Qwen3-1.7B"  # Using available Qwen model
         self.api_base = None
         self.api_key = "wb-ai-internal-key"
         
