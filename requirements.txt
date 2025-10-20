@@ -16,6 +16,7 @@ datasets
 transformers
 accelerate
 torch
+torchvision
 
 # API Layer
 fastapi
