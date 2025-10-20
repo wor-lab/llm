@@ -1,171 +1,107 @@
-"""
-WB AI Corporation - Dataset Management System
-Loads and processes HuggingFace datasets into ChromaDB
-"""
+# Filename: dataset_loader.py
+# Department: Data Division (DataSynth), Engineering Division (CodeArchitect)
+# Purpose: Ingests and processes code datasets into a persistent ChromaDB vector store.
 
-from datasets import load_dataset
-from typing import List, Dict, Optional
 import chromadb
-from chromadb.utils import embedding_functions
-from tqdm import tqdm
-import hashlib
-import json
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from datasets import load_dataset
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.embeddings import HuggingFaceEmbeddings
+import os
 
-class DatasetManager:
-    def __init__(self, db_path: str):
-        self.db_path = db_path
-        self.chroma_client = chromadb.PersistentClient(path=db_path)
-        self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name="all-MiniLM-L6-v2"
+# --- CONFIGURATION ---
+DATASETS = [
+    "princeton-nlp/SWE-bench_Verified",
+    "zai-org/humaneval-x",
+    "Muennighoff/mbpp",
+    "bigcode/bigcodebench",
+    "microsoft/r-star-coder", # Corrected name from rStar-Coder
+    "bigcode/the-stack-v2",
+    "livecodebench/code_generation_lite"
+]
+
+# Use a specific subset/split for large datasets to manage resources
+# For 'the-stack-v2', specify a language subset, e.g., 'data/python'
+DATASET_CONFIGS = {
+    "bigcode/the-stack-v2": {"data_dir": "data/python", "split": "train[:1%]"} # Example: 1% of python data
+}
+
+CHROMA_PATH = "chroma_db_code"
+EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+COLLECTION_NAME = "code_collection"
+
+def initialize_components():
+    """Initializes embeddings model and ChromaDB client."""
+    print("Initializing components...")
+    embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
+    client = chromadb.PersistentClient(path=CHROMA_PATH)
+    collection = client.get_or_create_collection(name=COLLECTION_NAME, metadata={"hnsw:space": "cosine"})
+    return embeddings, collection
+
+def process_and_embed(collection, embeddings, documents):
+    """Processes documents and embeds them into the collection in batches."""
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+    chunks = text_splitter.split_documents(documents)
+    
+    # Batch processing for efficiency
+    batch_size = 100
+    for i in range(0, len(chunks), batch_size):
+        batch_chunks = chunks[i:i + batch_size]
+        batch_texts = [chunk.page_content for chunk in batch_chunks]
+        batch_metadatas = [chunk.metadata for chunk in batch_chunks]
+        
+        print(f"Processing batch {i//batch_size + 1}/{(len(chunks) + batch_size - 1)//batch_size}...")
+        
+        embedded_vectors = embeddings.embed_documents(batch_texts)
+        ids = [f"id_{i+j}" for j in range(len(batch_chunks))]
+        
+        collection.add(
+            embeddings=embedded_vectors,
+            documents=batch_texts,
+            metadatas=batch_metadatas,
+            ids=ids
         )
-        
-        # Dataset configurations
-        self.datasets_config = {
-            "swe_bench": {
-                "name": "princeton-nlp/SWE-bench_Verified",
-                "split": "test",
-                "collection": "swe_bench",
-                "fields": ["problem_statement", "hints", "created_at"]
-            },
-            "humaneval": {
-                "name": "openai/openai_humaneval",
-                "split": "test", 
-                "collection": "humaneval",
-                "fields": ["prompt", "canonical_solution", "test"]
-            },
-            "mbpp": {
-                "name": "google-research-datasets/mbpp",
-                "split": "test",
-                "collection": "mbpp",
-                "fields": ["text", "code", "test_list"]
-            },
-            "bigcodebench": {
-                "name": "bigcode/bigcodebench",
-                "split": "v0.1.2",
-                "collection": "bigcodebench",
-                "fields": ["instruct_prompt", "canonical_solution"]
-            },
-            "stack_v2": {
-                "name": "bigcode/the-stack-v2-train-smol-ids",
-                "split": "train",
-                "collection": "stack_v2",
-                "fields": ["content"],
-                "sample_size": 10000  # Sample for efficiency
-            }
-        }
-        
-    def load_all_datasets(self):
-        """Load all configured datasets in parallel"""
-        print("[DATA] Initializing WB AI Knowledge Base...")
-        
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            futures = []
-            for dataset_key, config in self.datasets_config.items():
-                future = executor.submit(self._load_dataset, dataset_key, config)
-                futures.append(future)
-            
-            for future in as_completed(futures):
-                try:
-                    result = future.result()
-                    print(f"[DATA] {result}")
-                except Exception as e:
-                    print(f"[DATA] Error: {e}")
-                    
-    def _load_dataset(self, key: str, config: Dict) -> str:
-        """Load individual dataset into ChromaDB collection"""
+
+def main():
+    """Main function to load datasets and populate ChromaDB."""
+    if os.path.exists(CHROMA_PATH) and os.listdir(CHROMA_PATH):
+        print(f"ChromaDB already exists at '{CHROMA_PATH}'. Skipping data loading.")
+        return
+
+    embeddings, collection = initialize_components()
+    
+    all_docs = []
+    for repo_id in DATASETS:
         try:
-            collection = self.chroma_client.get_or_create_collection(
-                name=config["collection"],
-                embedding_function=self.embedding_fn
-            )
+            print(f"\nLoading dataset: {repo_id}")
+            config = DATASET_CONFIGS.get(repo_id, {})
+            # Use 'all' split if available, otherwise 'train'
+            split = config.get("split", "train")
+            dataset = load_dataset(repo_id, split=split, **{k:v for k,v in config.items() if k != 'split'})
             
-            # Check if already loaded
-            if collection.count() > 0:
-                return f"{key}: Already loaded ({collection.count()} documents)"
+            # Identify the most likely text/code column
+            content_column = next((col for col in ['content', 'text', 'code', 'prompt', 'canonical_solution'] if col in dataset.column_names), None)
             
-            # Load from HuggingFace
-            print(f"[DATA] Loading {config['name']}...")
-            dataset = load_dataset(
-                config["name"],
-                split=config["split"],
-                streaming=True if "sample_size" in config else False
-            )
-            
-            documents = []
-            metadatas = []
-            ids = []
-            
-            # Process dataset
-            sample_size = config.get("sample_size", float('inf'))
-            for idx, item in enumerate(tqdm(dataset, desc=key, total=min(sample_size, 1000))):
-                if idx >= sample_size:
-                    break
-                    
-                # Build document from available fields
-                doc_parts = []
-                metadata = {"source": key, "index": idx}
-                
-                for field in config["fields"]:
-                    if field in item and item[field]:
-                        value = item[field]
-                        if isinstance(value, list):
-                            value = "\n".join(map(str, value))
-                        doc_parts.append(f"{field}: {value}")
-                        metadata[field[:50]] = str(value)[:500]  # Truncate for metadata
-                
-                if doc_parts:
-                    document = "\n".join(doc_parts)
-                    documents.append(document)
-                    metadatas.append(metadata)
-                    ids.append(hashlib.md5(document.encode()).hexdigest())
-                
-                # Batch insert
-                if len(documents) >= 100:
-                    collection.add(
-                        documents=documents,
-                        metadatas=metadatas,
-                        ids=ids
-                    )
-                    documents, metadatas, ids = [], [], []
-            
-            # Final batch
-            if documents:
-                collection.add(
-                    documents=documents,
-                    metadatas=metadatas,
-                    ids=ids
-                )
-            
-            return f"{key}: Loaded {collection.count()} documents"
-            
-        except Exception as e:
-            return f"{key}: Failed - {str(e)}"
-            
-    def search(self, query: str, collection_name: str = None, n_results: int = 5) -> List[Dict]:
-        """Search across collections"""
-        results = []
-        
-        collections = [collection_name] if collection_name else [
-            c["collection"] for c in self.datasets_config.values()
-        ]
-        
-        for coll_name in collections:
-            try:
-                collection = self.chroma_client.get_collection(coll_name)
-                res = collection.query(
-                    query_texts=[query],
-                    n_results=n_results
-                )
-                
-                for i in range(len(res["documents"][0])):
-                    results.append({
-                        "collection": coll_name,
-                        "document": res["documents"][0][i],
-                        "metadata": res["metadatas"][0][i],
-                        "distance": res["distances"][0][i]
-                    })
-            except:
+            if not content_column:
+                print(f"Warning: Could not find a suitable content column for {repo_id}. Skipping.")
                 continue
-                
-        return sorted(results, key=lambda x: x["distance"])[:n_results]
+
+            for item in dataset:
+                if item[content_column]:
+                    all_docs.append({"page_content": item[content_column], "metadata": {"source": repo_id}})
+
+        except Exception as e:
+            print(f"Failed to load or process {repo_id}. Error: {e}")
+
+    # Convert dicts to LangChain Document objects for splitter
+    from langchain_core.documents import Document
+    langchain_docs = [Document(page_content=doc["page_content"], metadata=doc["metadata"]) for doc in all_docs]
+
+    if not langchain_docs:
+        print("No documents were loaded. Exiting.")
+        return
+
+    process_and_embed(collection, embeddings, langchain_docs)
+    print("\n✅ Data ingestion complete. ChromaDB is ready.")
+
+if __name__ == "__main__":
+    main()
