@@ -1,160 +1,66 @@
-"""
-WB AI Corporation - RAG Pipeline Engine
-Handles retrieval, generation, and knowledge management
-"""
+# rag_pipeline.py
+from langchain_community.vectorstores import Chroma
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_huggingface import HuggingFaceEndpoint
 
-from typing import List, Dict, Any, Optional
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.embeddings import HuggingFaceEmbeddings
-from langchain.vectorstores import Chroma
-from langchain.chains import RetrievalQA
-from langchain.llms import HuggingFacePipeline
-from langchain.prompts import PromptTemplate
-import chromadb
-from chromadb.config import Settings
+# --- Configuration ---
+# Match the config from dataset_loader.py
+EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+CHROMA_DB_PATH = "./chroma_db"
+COLLECTION_NAME = "code_assistant_knowledge"
 
-class RAGEngine:
-    def __init__(self, model_id: str, vector_store_path: str):
-        self.model_id = model_id
-        self.vector_store_path = vector_store_path
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        
-        # Initialize components
-        self._init_embeddings()
-        self._init_llm()
-        self._init_vectorstore()
-        self._init_retriever()
-        
-    def _init_embeddings(self):
-        """Initialize embedding model for vector search"""
-        self.embeddings = HuggingFaceEmbeddings(
-            model_name="sentence-transformers/all-MiniLM-L6-v2",
-            model_kwargs={'device': self.device},
-            encode_kwargs={'normalize_embeddings': True}
-        )
-        
-    def _init_llm(self):
-        """Initialize Qwen model with quantization"""
-        print(f"[RAG] Loading {self.model_id}...")
-        
-        # 4-bit quantization config for efficiency
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.float16,
-            bnb_4bit_use_double_quant=True
-        )
-        
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            self.model_id,
-            trust_remote_code=True
-        )
-        
-        self.model = AutoModelForCausalLM.from_pretrained(
-            self.model_id,
-            quantization_config=bnb_config if self.device == "cuda" else None,
-            device_map="auto",
-            trust_remote_code=True,
-            torch_dtype=torch.float16 if self.device == "cuda" else torch.float32
-        )
-        
-        # Create LangChain pipeline
-        from transformers import pipeline
-        pipe = pipeline(
-            "text-generation",
-            model=self.model,
-            tokenizer=self.tokenizer,
-            max_new_tokens=512,
-            temperature=0.7,
-            top_p=0.95,
-            repetition_penalty=1.15
-        )
-        
-        self.llm = HuggingFacePipeline(pipeline=pipe)
-        
-    def _init_vectorstore(self):
-        """Initialize ChromaDB vector store"""
-        self.chroma_client = chromadb.PersistentClient(
-            path=self.vector_store_path,
-            settings=Settings(
-                anonymized_telemetry=False,
-                allow_reset=True
-            )
-        )
-        
-        self.vectorstore = Chroma(
-            client=self.chroma_client,
-            collection_name="wb_knowledge_base",
-            embedding_function=self.embeddings
-        )
-        
-    def _init_retriever(self):
-        """Setup retrieval chain with custom prompts"""
-        prompt_template = """[WB AI SYSTEM CONTEXT]
-You are an expert AI agent within WB AI Corporation.
-Use the following context to provide precise, actionable responses.
+# API configuration for the LLM
+# IMPORTANT: This assumes a local server is running, which will be started by api_server.py
+# We will use the HuggingFaceEndpoint class to interface with it.
+LLM_API_URL = "http://127.0.0.1:8001" 
+HF_TOKEN = "your_huggingface_token_here" # Required for some models, even if self-hosted
 
-Context: {context}
+def get_rag_chain():
+    """Constructs and returns the complete RAG chain."""
+    
+    # 1. Initialize the embedding model for the retriever
+    embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
 
-Task: {question}
+    # 2. Connect to the existing ChromaDB collection
+    vectorstore = Chroma(
+        collection_name=COLLECTION_NAME,
+        persist_directory=CHROMA_DB_PATH,
+        embedding_function=embeddings
+    )
+    retriever = vectorstore.as_retriever(search_kwargs={'k': 5}) # Retrieve top 5 documents
 
-Response (be specific and implementation-focused):"""
-        
-        PROMPT = PromptTemplate(
-            template=prompt_template,
-            input_variables=["context", "question"]
-        )
-        
-        self.qa_chain = RetrievalQA.from_chain_type(
-            llm=self.llm,
-            chain_type="stuff",
-            retriever=self.vectorstore.as_retriever(
-                search_kwargs={"k": 5}
-            ),
-            chain_type_kwargs={"prompt": PROMPT},
-            return_source_documents=True
-        )
-        
-    def add_documents(self, documents: List[str], metadata: List[Dict] = None):
-        """Add new documents to knowledge base"""
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200,
-            separators=["\n\n", "\n", " ", ""]
-        )
-        
-        chunks = text_splitter.create_documents(
-            documents,
-            metadatas=metadata
-        )
-        
-        self.vectorstore.add_documents(chunks)
-        print(f"[RAG] Added {len(chunks)} chunks to knowledge base")
-        
-    def query(self, question: str, filters: Dict = None) -> Dict[str, Any]:
-        """Execute RAG query with optional metadata filtering"""
-        result = self.qa_chain({"query": question})
-        
-        return {
-            "answer": result["result"],
-            "sources": [doc.metadata for doc in result.get("source_documents", [])],
-            "confidence": self._calculate_confidence(result)
-        }
-        
-    def _calculate_confidence(self, result: Dict) -> float:
-        """Calculate response confidence based on retrieval quality"""
-        if "source_documents" not in result:
-            return 0.3
-        
-        # Simple confidence based on number of relevant sources
-        num_sources = len(result["source_documents"])
-        return min(0.9, 0.3 + (num_sources * 0.15))
-        
-    def hybrid_search(self, query: str, code_context: str = None) -> str:
-        """Combine vector search with code-aware generation"""
-        context_prompt = f"Code Context:\n{code_context}\n\n" if code_context else ""
-        enhanced_query = f"{context_prompt}Query: {query}"
-        
-        return self.query(enhanced_query)
+    # 3. Define the prompt template
+    template = """
+    You are an expert programmer and code assistant. Use the following retrieved context to answer the user's question.
+    If you don't know the answer from the context, state that you do not have enough information.
+    Provide concise, accurate, and code-centric answers.
+
+    CONTEXT:
+    {context}
+
+    QUESTION:
+    {question}
+
+    ANSWER:
+    """
+    prompt = ChatPromptTemplate.from_template(template)
+
+    # 4. Initialize the LLM via its API endpoint
+    llm = HuggingFaceEndpoint(
+        endpoint_url=LLM_API_URL,
+        huggingfacehub_api_token=HF_TOKEN,
+        task="text-generation",
+        model_kwargs={"max_new_tokens": 512}
+    )
+
+    # 5. Build the RAG chain using LangChain Expression Language (LCEL)
+    rag_chain = (
+        {"context": retriever, "question": RunnablePassthrough()}
+        | prompt
+        | llm
+        | StrOutputParser()
+    )
+
+    return rag_chain
