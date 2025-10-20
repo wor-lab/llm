@@ -1,174 +1,143 @@
 """
-WB AI CORPORATION - Agentic RAG System
+WB AI CORPORATION — AUTONOMOUS AGENT SYSTEM
 Main Orchestrator for Google Colab Deployment
-═══════════════════════════════════════════════
+
+MISSION: Initialize multi-agent RAG system with real datasets
+AGENTS: All divisions coordinated through LangGraph
 """
 
 import os
 import sys
 import subprocess
 from pathlib import Path
-import threading
-import time
 
-class WBOrchestrator:
-    """Central command for WB AI Corporation's Agentic RAG System"""
+# ══════════════════════════════════════════════════════
+# ENVIRONMENT SETUP
+# ══════════════════════════════════════════════════════
+
+class WBCoreOrchestrator:
+    """WB AI Corporation Central Intelligence"""
     
     def __init__(self):
-        self.ngrok_token = os.getenv('1vikehg18jsR9XrEzKEybCifEr9_AWWFzoCD58Xa151mXfLd')
-        self.project_root = Path('/')
-        self.model_name = "Qwen/Qwen3-1.7B"  # Using available Qwen model
-        self.api_base = None
-        self.api_key = "wb-ai-internal-key"
+        self.project_name = "WB-AI-CodeIntelligence"
+        self.status = "🟢 INITIALIZING"
         
-    def setup_environment(self):
-        """Install dependencies and configure environment"""
-        print("🏢 WB AI Corporation - System Initialization")
-        print("=" * 60)
+    def install_dependencies(self):
+        """Install production dependencies"""
+        print("🔧 [OpsManager] Installing core infrastructure...")
         
-        # Create project structure
-        self.project_root.mkdir(exist_ok=True)
-        os.chdir(self.project_root)
-        
-        # Install dependencies
         dependencies = [
-            "langchain langchain-community langchain-openai",
-            "langgraph",
-            "chromadb",
-            "sentence-transformers",
-            "datasets",
-            "transformers torch accelerate bitsandbytes",
-            "pyngrok",
-            "fastapi uvicorn",
-            "tiktoken",
-            "openai"
+            "langchain>=0.1.0",
+            "langgraph>=0.0.40",
+            "langchain-community",
+            "chromadb>=0.4.22",
+            "datasets>=2.16.0",
+            "transformers>=4.36.0",
+            "torch>=2.1.0",
+            "fastapi>=0.109.0",
+            "uvicorn>=0.27.0",
+            "pyngrok>=7.0.0",
+            "sentence-transformers>=2.3.0",
+            "huggingface-hub>=0.20.0",
+            "pydantic>=2.5.0",
+            "python-dotenv>=1.0.0",
+            "accelerate>=0.26.0",
+            "bitsandbytes>=0.42.0"
         ]
         
-        print("\n📦 Installing production dependencies...")
         for dep in dependencies:
             subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", dep])
         
-        print("✅ Environment configured\n")
+        print("✅ [OpsManager] Infrastructure ready")
     
-    def configure_ngrok(self):
-        """Setup NGROK tunnel for model server"""
-        if not self.ngrok_token:
-            raise ValueError("❌ NGROK_AUTH_TOKEN not found in environment")
+    def configure_environment(self, ngrok_token: str):
+        """Setup environment variables and authentication"""
+        print("🔐 [SecAnalyst] Configuring secure environment...")
         
-        from pyngrok import ngrok, conf
-        conf.get_default().auth_token = self.ngrok_token
-        print("✅ NGROK authenticated\n")
+        os.environ['NGROK_AUTH_TOKEN'] = ngrok_token
+        os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+        os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'
+        
+        # Create directory structure
+        Path("./chroma_db").mkdir(exist_ok=True)
+        Path("./models").mkdir(exist_ok=True)
+        Path("./logs").mkdir(exist_ok=True)
+        
+        print("✅ [SecAnalyst] Environment secured")
     
-    def start_model_server(self):
-        """Launch Qwen3-1.7B server with NGROK tunnel"""
-        print("🚀 Launching Model Server (Qwen3-1.7B)...")
+    def load_datasets(self):
+        """Initialize dataset loader"""
+        print("📊 [DataSynth] Loading HuggingFace datasets into ChromaDB...")
+        from dataset_loader import DatasetManager
         
-        # Start server in background thread
-        server_thread = threading.Thread(target=self._run_server, daemon=True)
-        server_thread.start()
+        dm = DatasetManager()
+        dm.load_all_datasets()
         
-        # Wait for server startup
-        time.sleep(10)
-        
-        # Create NGROK tunnel
-        from pyngrok import ngrok
-        tunnel = ngrok.connect(8000, bind_tls=True)
-        self.api_base = tunnel.public_url
-        
-        print(f"✅ Model Server Online")
-        print(f"📡 API Endpoint: {self.api_base}")
-        print(f"🔑 API Key: {self.api_key}\n")
-        
-        # Save configuration
-        with open('config.txt', 'w') as f:
-            f.write(f"API_BASE={self.api_base}\n")
-            f.write(f"API_KEY={self.api_key}\n")
+        print("✅ [DataSynth] Knowledge base populated")
     
-    def _run_server(self):
-        """Internal server runner"""
-        from model_server import app
-        import uvicorn
-        uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")
+    def initialize_agents(self):
+        """Start LangGraph agent system"""
+        print("🧠 [CodeArchitect] Initializing multi-agent system...")
+        from agent_system import AgentOrchestrator
+        
+        self.agent_system = AgentOrchestrator()
+        print("✅ [CodeArchitect] Agents online")
     
-    def initialize_data_pipeline(self):
-        """Load and embed code datasets into ChromaDB"""
-        print("📊 Initializing Data Pipeline...")
-        from data_pipeline import DataPipeline
+    def start_api_server(self, port: int = 8000):
+        """Launch FastAPI + NGROK endpoint"""
+        print("⚙️ [AutoBot] Starting API server with NGROK tunnel...")
+        from api_server import launch_server
         
-        pipeline = DataPipeline()
-        pipeline.load_datasets()
-        pipeline.create_embeddings()
-        
-        print("✅ Data pipeline ready\n")
+        launch_server(port=port)
     
-    def launch_agentic_rag(self):
-        """Start the multi-agent RAG system"""
-        print("🧠 Launching Agentic RAG System...")
-        from agentic_rag import AgenticRAG
+    def execute_mission(self, ngrok_token: str):
+        """Full system deployment"""
+        print(f"""
+╔════════════════════════════════════════════════════╗
+║     🏢 WB AI CORPORATION — SYSTEM BOOT            ║
+║     PROJECT: AUTONOMOUS CODE INTELLIGENCE          ║
+╚════════════════════════════════════════════════════╝
+        """)
         
-        rag = AgenticRAG(
-            api_base=self.api_base,
-            api_key=self.api_key
-        )
-        
-        print("✅ Agentic RAG System Online\n")
-        return rag
-    
-    def run_demo(self, rag):
-        """Execute demonstration queries"""
-        print("=" * 60)
-        print("🎯 DEMO: Code Generation with Agentic RAG")
-        print("=" * 60)
-        
-        test_queries = [
-            "Write a Python function to implement binary search",
-            "Create a function to reverse a linked list in-place",
-            "Implement a function to check if a string is a valid palindrome"
-        ]
-        
-        for i, query in enumerate(test_queries, 1):
-            print(f"\n[QUERY {i}] {query}")
-            print("-" * 60)
-            
-            result = rag.execute(query)
-            
-            print(f"📝 Generated Code:\n{result['code']}\n")
-            print(f"⚡ Agent Path: {' → '.join(result['agent_path'])}")
-            print(f"📊 Evaluation Score: {result.get('score', 'N/A')}")
-            print("=" * 60)
-    
-    def execute(self):
-        """Main execution pipeline"""
         try:
-            self.setup_environment()
-            self.configure_ngrok()
-            self.start_model_server()
-            self.initialize_data_pipeline()
+            self.install_dependencies()
+            self.configure_environment(ngrok_token)
+            self.load_datasets()
+            self.initialize_agents()
+            self.start_api_server()
             
-            rag = self.launch_agentic_rag()
-            self.run_demo(rag)
-            
-            print("\n✅ WB AI Corporation - System Fully Operational")
-            print(f"📡 API Endpoint: {self.api_base}")
-            print("🔄 System ready for production queries\n")
-            
-            return rag
+            self.status = "🟢 OPERATIONAL"
+            print(f"\n✅ WB AI CORPORATION STATUS: {self.status}")
             
         except Exception as e:
-            print(f"❌ SYSTEM FAILURE: {e}")
+            self.status = f"🔴 ERROR: {str(e)}"
+            print(f"\n❌ {self.status}")
             raise
 
+# ══════════════════════════════════════════════════════
+# COLAB EXECUTION INTERFACE
+# ══════════════════════════════════════════════════════
 
-# ═══════════════════════════════════════════════
-# EXECUTION ENTRY POINT
-# ═══════════════════════════════════════════════
+def main():
+    """
+    USAGE IN COLAB:
+    
+    from run_colab import main
+    main(ngrok_token="YOUR_NGROK_TOKEN")
+    """
+    
+    # Get NGROK token from user input in Colab
+    try:
+        from google.colab import userdata
+        ngrok_token = userdata.get('NGROK_AUTH_TOKEN')
+    except:
+        print("⚠️ Running outside Colab - please set NGROK_AUTH_TOKEN manually")
+        ngrok_token = input("Enter NGROK_AUTH_TOKEN: ")
+    
+    core = WBCoreOrchestrator()
+    core.execute_mission(ngrok_token)
+    
+    return core
 
 if __name__ == "__main__":
-    # Set NGROK token (replace with your token)
-    # os.environ['NGROK_AUTH_TOKEN'] = 'your_token_here'
-    
-    orchestrator = WBOrchestrator()
-    rag_system = orchestrator.execute()
-    
-    # Keep system running for interactive queries
-    print("\n💡 System ready. Use rag_system.execute(your_query) for custom queries")
+    wb_system = main()
