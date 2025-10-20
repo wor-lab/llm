@@ -1,133 +1,162 @@
-"""
-WB AI Corporation - RAG Pipeline Module
-Agent: CodeArchitect
-Purpose: Implement retrieval-augmented generation for code intelligence
-"""
-
 import os
-from typing import List, Dict, Any
-from langchain_huggingface import HuggingFaceEndpoint
-from langchain.chains import RetrievalQA
-from langchain.prompts import PromptTemplate
+import json
+from typing import Dict, List, TypedDict, Optional
+import torch
+from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+from langchain_community.llms.huggingface_pipeline import HuggingFacePipeline
 from langchain_community.vectorstores import Chroma
-from loguru import logger
-from dotenv import load_dotenv
-
-load_dotenv()
+from langchain.prompts import PromptTemplate
+from langgraph.graph import StateGraph, START, END
 
 
-class RAGPipeline:
-    """Production RAG system for code intelligence"""
-    
-    SYSTEM_PROMPT = """You are WB AI Code Intelligence Assistant - an expert code analysis and generation system.
+def _get_env(name: str, default: Optional[str] = None) -> str:
+    v = os.getenv(name, default)
+    if v is None:
+        raise RuntimeError(f"Missing required environment variable: {name}")
+    return v
 
-Context from knowledge base:
-{context}
 
-User Query: {question}
+def build_llm() -> HuggingFacePipeline:
+    model_id = _get_env("MODEL_ID")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
-Instructions:
-- Provide precise, executable code solutions
-- Reference relevant examples from context
-- Follow best practices and enterprise standards
-- Include brief explanations for complex logic
+    tok = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+    mdl = AutoModelForCausalLM.from_pretrained(
+        model_id,
+        torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+        device_map="auto" if torch.cuda.is_available() else None,
+        trust_remote_code=True,
+    )
+    gen_pipe = pipeline(
+        task="text-generation",
+        model=mdl,
+        tokenizer=tok,
+        max_new_tokens=1024,
+        temperature=0.2,
+        top_p=0.95,
+        repetition_penalty=1.05,
+        do_sample=True,
+        pad_token_id=tok.eos_token_id,
+    )
+    return HuggingFacePipeline(pipeline=gen_pipe)
 
-Response:"""
-    
-    def __init__(self, vectorstore: Chroma):
-        self.vectorstore = vectorstore
-        self.model_server = os.getenv("MODEL_SERVER")
-        self.api_key = os.getenv("HF_API_KEY")
-        self.temperature = float(os.getenv("TEMPERATURE", 0.7))
-        self.top_k = int(os.getenv("TOP_K_RESULTS", 5))
-        self.max_length = int(os.getenv("MAX_CONTEXT_LENGTH", 2048))
-        
-        # Initialize LLM
-        self.llm = HuggingFaceEndpoint(
-            endpoint_url=self.model_server,
-            huggingfacehub_api_token=self.api_key,
-            task="text-generation",
-            model_kwargs={
-                "temperature": self.temperature,
-                "max_new_tokens": 512,
-                "return_full_text": False,
-            }
+
+def build_retriever(chroma_dir: str, collection: str = "code-corpus", k: int = 8):
+    db = Chroma(collection_name=collection, persist_directory=chroma_dir)
+    return db.as_retriever(search_kwargs={"k": k})
+
+
+class RAGState(TypedDict):
+    question: str
+    subqueries: List[str]
+    contexts: List[str]
+    draft: str
+    final: str
+    citations: List[Dict]
+
+
+PLAN_PROMPT = PromptTemplate.from_template(
+    "You are a senior engineer. Decompose the user query into 1-4 focused sub-queries for retrieval.\n"
+    "Return a JSON list of strings only.\n\n"
+    "Query: {question}\n"
+)
+
+GEN_PROMPT = PromptTemplate.from_template(
+    "System:\n"
+    "You are an enterprise code assistant. Use only the provided context to answer.\n"
+    "If the answer is uncertain, state the uncertainty and what evidence is missing.\n\n"
+    "Context:\n{context}\n\n"
+    "User:\n{question}\n\n"
+    "Answer:"
+)
+
+CRITIQUE_PROMPT = PromptTemplate.from_template(
+    "Act as a security and quality auditor. Identify unsupported claims, missing citations, and risks.\n"
+    "Return a JSON with keys: issues (list[str]), risk (low|medium|high).\n\n"
+    "Draft:\n{draft}\n"
+)
+
+
+def _llm_json(llm: HuggingFacePipeline, prompt: str) -> List[str]:
+    out = llm.invoke(prompt)
+    text = out if isinstance(out, str) else getattr(out, "content", str(out))
+    try:
+        js = json.loads(text.strip().split("```json")[-1].split("```")[0]) if "```json" in text else json.loads(text)
+    except Exception:
+        # naive list extraction fallback
+        lines = [l.strip("-* \n") for l in text.splitlines() if l.strip()]
+        js = [l for l in lines if len(l) > 2][:4]
+    if isinstance(js, list):
+        return [str(s) for s in js][:4]
+    return [str(js)]
+
+
+def _join_contexts(ctxs: List[str]) -> str:
+    if not ctxs:
+        return "No relevant context."
+    return "\n\n----\n\n".join(ctxs)
+
+
+def create_agentic_rag(chroma_dir: str):
+    retriever = build_retriever(chroma_dir)
+    llm = build_llm()
+
+    def plan_node(state: RAGState) -> RAGState:
+        prompt = PLAN_PROMPT.format(question=state["question"])
+        subs = _llm_json(llm, prompt)
+        return {**state, "subqueries": subs or [state["question"]]}
+
+    def retrieve_node(state: RAGState) -> RAGState:
+        contexts: List[str] = []
+        citations: List[Dict] = []
+        for q in state["subqueries"]:
+            docs = retriever.get_relevant_documents(q)
+            for d in docs:
+                contexts.append(d.page_content)
+                citations.append(d.metadata)
+        return {**state, "contexts": contexts, "citations": citations}
+
+    def generate_node(state: RAGState) -> RAGState:
+        context = _join_contexts(state.get("contexts", []))
+        prompt = GEN_PROMPT.format(context=context, question=state["question"])
+        draft = llm.invoke(prompt)
+        draft = draft if isinstance(draft, str) else getattr(draft, "content", str(draft))
+        return {**state, "draft": draft}
+
+    def critique_refine_node(state: RAGState) -> RAGState:
+        critique = llm.invoke(CRITIQUE_PROMPT.format(draft=state["draft"]))
+        critique = critique if isinstance(critique, str) else getattr(critique, "content", str(critique))
+        refine_prompt = (
+            "Revise the answer based on the critique while staying grounded in the context.\n"
+            f"Critique:\n{critique}\n\n"
+            f"Original Draft:\n{state['draft']}\n\n"
+            "Final Answer:"
         )
-        
-        # Setup retrieval chain
-        self.retriever = self.vectorstore.as_retriever(
-            search_type="similarity",
-            search_kwargs={"k": self.top_k}
-        )
-        
-        self.prompt = PromptTemplate(
-            template=self.SYSTEM_PROMPT,
-            input_variables=["context", "question"]
-        )
-        
-        self.qa_chain = RetrievalQA.from_chain_type(
-            llm=self.llm,
-            chain_type="stuff",
-            retriever=self.retriever,
-            return_source_documents=True,
-            chain_type_kwargs={"prompt": self.prompt}
-        )
-        
-        logger.info("RAG Pipeline initialized | Model: Qwen3-1.7B")
-    
-    def query(self, question: str) -> Dict[str, Any]:
-        """Execute RAG query"""
-        logger.info(f"Processing query: {question[:100]}...")
-        
-        try:
-            result = self.qa_chain.invoke({"query": question})
-            
-            response = {
-                "answer": result["result"],
-                "sources": [
-                    {
-                        "content": doc.page_content[:200],
-                        "metadata": doc.metadata
-                    }
-                    for doc in result["source_documents"]
-                ],
-                "status": "success"
-            }
-            
-            logger.success("Query processed successfully")
-            return response
-            
-        except Exception as e:
-            logger.error(f"Query failed: {e}")
-            return {
-                "answer": f"Error processing query: {str(e)}",
-                "sources": [],
-                "status": "error"
-            }
-    
-    def retrieve_context(self, query: str, k: int = None) -> List[Dict[str, Any]]:
-        """Retrieve relevant documents without generation"""
-        k = k or self.top_k
-        docs = self.retriever.get_relevant_documents(query)[:k]
-        
-        return [
-            {
-                "content": doc.page_content,
-                "metadata": doc.metadata,
-                "relevance_score": idx
-            }
-            for idx, doc in enumerate(docs)
-        ]
+        final = llm.invoke(refine_prompt)
+        final = final if isinstance(final, str) else getattr(final, "content", str(final))
+        return {**state, "final": final}
+
+    graph = StateGraph(RAGState)
+    graph.add_node("plan", plan_node)
+    graph.add_node("retrieve", retrieve_node)
+    graph.add_node("generate", generate_node)
+    graph.add_node("critique_refine", critique_refine_node)
+
+    graph.add_edge(START, "plan")
+    graph.add_edge("plan", "retrieve")
+    graph.add_edge("retrieve", "generate")
+    graph.add_edge("generate", "critique_refine")
+    graph.add_edge("critique_refine", END)
+
+    app = graph.compile()
+    return app, llm, retriever
 
 
-if __name__ == "__main__":
-    from dataset_loader import DatasetLoader
-    
-    loader = DatasetLoader()
-    vectorstore = loader.load_existing()
-    
-    pipeline = RAGPipeline(vectorstore)
-    result = pipeline.query("Write a Python function to reverse a linked list")
-    
-    print(f"Answer: {result['answer']}")
-    print(f"Sources: {len(result['sources'])}")
+def run_agentic_rag(app, question: str) -> Dict:
+    state: RAGState = {"question": question, "subqueries": [], "contexts": [], "draft": "", "final": "", "citations": []}
+    result = app.invoke(state)
+    return {
+        "answer": result.get("final", result.get("draft", "")),
+        "citations": result.get("citations", []),
+        "subqueries": result.get("subqueries", []),
+    }
