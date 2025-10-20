@@ -1,265 +1,171 @@
 """
-WB AI CORPORATION - Data Division
-Dataset Loading & Processing Pipeline
-Real HuggingFace Dataset Integration
+WB AI Corporation - Dataset Management System
+Loads and processes HuggingFace datasets into ChromaDB
 """
 
-import logging
-from typing import List, Dict, Any
 from datasets import load_dataset
-from dataclasses import dataclass
+from typing import List, Dict, Optional
+import chromadb
+from chromadb.utils import embedding_functions
+from tqdm import tqdm
 import hashlib
-
-logger = logging.getLogger(__name__)
-
-@dataclass
-class CodeDocument:
-    """Structured code document for RAG indexing"""
-    id: str
-    content: str
-    metadata: Dict[str, Any]
-    embedding_text: str
+import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 class DatasetManager:
-    """Enterprise dataset loading and preprocessing"""
-    
-    def __init__(self, datasets: List[str], hf_token: str = None):
-        self.dataset_configs = datasets
-        self.hf_token = hf_token
-        self.documents = []
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+        self.chroma_client = chromadb.PersistentClient(path=db_path)
+        self.embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+            model_name="all-MiniLM-L6-v2"
+        )
         
-    def _generate_id(self, content: str, source: str) -> str:
-        """Generate unique document ID"""
-        hash_input = f"{source}:{content[:100]}"
-        return hashlib.sha256(hash_input.encode()).hexdigest()[:16]
-    
-    def _load_swe_bench(self) -> List[CodeDocument]:
-        """Load SWE-bench Verified dataset"""
-        logger.info("Loading SWE-bench_Verified...")
+        # Dataset configurations
+        self.datasets_config = {
+            "swe_bench": {
+                "name": "princeton-nlp/SWE-bench_Verified",
+                "split": "test",
+                "collection": "swe_bench",
+                "fields": ["problem_statement", "hints", "created_at"]
+            },
+            "humaneval": {
+                "name": "openai/openai_humaneval",
+                "split": "test", 
+                "collection": "humaneval",
+                "fields": ["prompt", "canonical_solution", "test"]
+            },
+            "mbpp": {
+                "name": "google-research-datasets/mbpp",
+                "split": "test",
+                "collection": "mbpp",
+                "fields": ["text", "code", "test_list"]
+            },
+            "bigcodebench": {
+                "name": "bigcode/bigcodebench",
+                "split": "v0.1.2",
+                "collection": "bigcodebench",
+                "fields": ["instruct_prompt", "canonical_solution"]
+            },
+            "stack_v2": {
+                "name": "bigcode/the-stack-v2-train-smol-ids",
+                "split": "train",
+                "collection": "stack_v2",
+                "fields": ["content"],
+                "sample_size": 10000  # Sample for efficiency
+            }
+        }
         
+    def load_all_datasets(self):
+        """Load all configured datasets in parallel"""
+        print("[DATA] Initializing WB AI Knowledge Base...")
+        
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = []
+            for dataset_key, config in self.datasets_config.items():
+                future = executor.submit(self._load_dataset, dataset_key, config)
+                futures.append(future)
+            
+            for future in as_completed(futures):
+                try:
+                    result = future.result()
+                    print(f"[DATA] {result}")
+                except Exception as e:
+                    print(f"[DATA] Error: {e}")
+                    
+    def _load_dataset(self, key: str, config: Dict) -> str:
+        """Load individual dataset into ChromaDB collection"""
         try:
-            dataset = load_dataset(
-                "princeton-nlp/SWE-bench_Verified",
-                split="test",
-                token=self.hf_token
+            collection = self.chroma_client.get_or_create_collection(
+                name=config["collection"],
+                embedding_function=self.embedding_fn
             )
             
-            docs = []
-            for idx, item in enumerate(dataset):
-                if idx >= 500:  # Limit for performance
-                    break
-                    
-                content = f"""
-Problem: {item.get('problem_statement', '')}
-
-Patch:
-{item.get('patch', '')}
-
-Test:
-{item.get('test_patch', '')}
-"""
-                
-                doc = CodeDocument(
-                    id=self._generate_id(content, 'swe_bench'),
-                    content=content,
-                    metadata={
-                        'source': 'swe_bench',
-                        'repo': item.get('repo', ''),
-                        'instance_id': item.get('instance_id', ''),
-                    },
-                    embedding_text=content
-                )
-                docs.append(doc)
+            # Check if already loaded
+            if collection.count() > 0:
+                return f"{key}: Already loaded ({collection.count()} documents)"
             
-            logger.info(f"✅ Loaded {len(docs)} SWE-bench documents")
-            return docs
-            
-        except Exception as e:
-            logger.error(f"Failed to load SWE-bench: {e}")
-            return []
-    
-    def _load_humaneval(self) -> List[CodeDocument]:
-        """Load HumanEval dataset"""
-        logger.info("Loading HumanEval...")
-        
-        try:
-            dataset = load_dataset("openai/humaneval", split="test")
-            
-            docs = []
-            for item in dataset:
-                content = f"""
-Task: {item['prompt']}
-
-Canonical Solution:
-{item['canonical_solution']}
-
-Test Cases:
-{item['test']}
-"""
-                
-                doc = CodeDocument(
-                    id=self._generate_id(content, 'humaneval'),
-                    content=content,
-                    metadata={
-                        'source': 'humaneval',
-                        'task_id': item['task_id'],
-                        'entry_point': item['entry_point'],
-                    },
-                    embedding_text=f"{item['prompt']} {item['canonical_solution']}"
-                )
-                docs.append(doc)
-            
-            logger.info(f"✅ Loaded {len(docs)} HumanEval documents")
-            return docs
-            
-        except Exception as e:
-            logger.error(f"Failed to load HumanEval: {e}")
-            return []
-    
-    def _load_mbpp(self) -> List[CodeDocument]:
-        """Load MBPP dataset"""
-        logger.info("Loading MBPP...")
-        
-        try:
+            # Load from HuggingFace
+            print(f"[DATA] Loading {config['name']}...")
             dataset = load_dataset(
-                "google-research-datasets/mbpp",
-                "sanitized",
-                split="test"
+                config["name"],
+                split=config["split"],
+                streaming=True if "sample_size" in config else False
             )
             
-            docs = []
-            for idx, item in enumerate(dataset):
-                if idx >= 300:  # Limit
+            documents = []
+            metadatas = []
+            ids = []
+            
+            # Process dataset
+            sample_size = config.get("sample_size", float('inf'))
+            for idx, item in enumerate(tqdm(dataset, desc=key, total=min(sample_size, 1000))):
+                if idx >= sample_size:
                     break
                     
-                content = f"""
-Problem: {item['text']}
-
-Code:
-{item['code']}
-
-Test Cases:
-{chr(10).join(item['test_list'])}
-"""
+                # Build document from available fields
+                doc_parts = []
+                metadata = {"source": key, "index": idx}
                 
-                doc = CodeDocument(
-                    id=self._generate_id(content, 'mbpp'),
-                    content=content,
-                    metadata={
-                        'source': 'mbpp',
-                        'task_id': item['task_id'],
-                    },
-                    embedding_text=f"{item['text']} {item['code']}"
-                )
-                docs.append(doc)
+                for field in config["fields"]:
+                    if field in item and item[field]:
+                        value = item[field]
+                        if isinstance(value, list):
+                            value = "\n".join(map(str, value))
+                        doc_parts.append(f"{field}: {value}")
+                        metadata[field[:50]] = str(value)[:500]  # Truncate for metadata
+                
+                if doc_parts:
+                    document = "\n".join(doc_parts)
+                    documents.append(document)
+                    metadatas.append(metadata)
+                    ids.append(hashlib.md5(document.encode()).hexdigest())
+                
+                # Batch insert
+                if len(documents) >= 100:
+                    collection.add(
+                        documents=documents,
+                        metadatas=metadatas,
+                        ids=ids
+                    )
+                    documents, metadatas, ids = [], [], []
             
-            logger.info(f"✅ Loaded {len(docs)} MBPP documents")
-            return docs
+            # Final batch
+            if documents:
+                collection.add(
+                    documents=documents,
+                    metadatas=metadatas,
+                    ids=ids
+                )
+            
+            return f"{key}: Loaded {collection.count()} documents"
             
         except Exception as e:
-            logger.error(f"Failed to load MBPP: {e}")
-            return []
-    
-    def _load_bigcodebench(self) -> List[CodeDocument]:
-        """Load BigCodeBench dataset"""
-        logger.info("Loading BigCodeBench...")
-        
-        try:
-            dataset = load_dataset(
-                "bigcode/bigcodebench",
-                split="v0.1.2",
-                token=self.hf_token
-            )
+            return f"{key}: Failed - {str(e)}"
             
-            docs = []
-            for idx, item in enumerate(dataset):
-                if idx >= 200:  # Limit
-                    break
-                    
-                content = f"""
-Task: {item.get('instruct_prompt', '')}
-
-Complete Prompt:
-{item.get('complete_prompt', '')}
-
-Code Context:
-{item.get('code_context', '')}
-"""
-                
-                doc = CodeDocument(
-                    id=self._generate_id(content, 'bigcodebench'),
-                    content=content,
-                    metadata={
-                        'source': 'bigcodebench',
-                        'task_id': item.get('task_id', ''),
-                    },
-                    embedding_text=content
+    def search(self, query: str, collection_name: str = None, n_results: int = 5) -> List[Dict]:
+        """Search across collections"""
+        results = []
+        
+        collections = [collection_name] if collection_name else [
+            c["collection"] for c in self.datasets_config.values()
+        ]
+        
+        for coll_name in collections:
+            try:
+                collection = self.chroma_client.get_collection(coll_name)
+                res = collection.query(
+                    query_texts=[query],
+                    n_results=n_results
                 )
-                docs.append(doc)
-            
-            logger.info(f"✅ Loaded {len(docs)} BigCodeBench documents")
-            return docs
-            
-        except Exception as e:
-            logger.error(f"Failed to load BigCodeBench: {e}")
-            return []
-    
-    def _load_the_stack(self) -> List[CodeDocument]:
-        """Load The Stack v2 dataset (sampled)"""
-        logger.info("Loading The Stack v2 (sampled)...")
-        
-        try:
-            dataset = load_dataset(
-                "bigcode/the-stack-v2-dedup",
-                data_dir="data/python",
-                split="train",
-                streaming=True,
-                token=self.hf_token
-            )
-            
-            docs = []
-            for idx, item in enumerate(dataset):
-                if idx >= 1000:  # Sample limit
-                    break
                 
-                content = item.get('content', '')
-                if len(content) < 100 or len(content) > 5000:  # Filter
-                    continue
-                    
-                doc = CodeDocument(
-                    id=self._generate_id(content, 'the_stack'),
-                    content=content,
-                    metadata={
-                        'source': 'the_stack_v2',
-                        'language': 'python',
-                        'repo': item.get('max_stars_repo_name', ''),
-                        'stars': item.get('max_stars_count', 0),
-                    },
-                    embedding_text=content[:1000]  # Limit for embedding
-                )
-                docs.append(doc)
-            
-            logger.info(f"✅ Loaded {len(docs)} The Stack documents")
-            return docs
-            
-        except Exception as e:
-            logger.error(f"Failed to load The Stack: {e}")
-            return []
-    
-    def load_all_datasets(self) -> List[CodeDocument]:
-        """Load all configured datasets"""
-        logger.info("🔄 Starting dataset loading pipeline...")
-        
-        all_docs = []
-        
-        # Load each dataset
-        all_docs.extend(self._load_swe_bench())
-        all_docs.extend(self._load_humaneval())
-        all_docs.extend(self._load_mbpp())
-        all_docs.extend(self._load_bigcodebench())
-        all_docs.extend(self._load_the_stack())
-        
-        logger.info(f"📚 Total documents loaded: {len(all_docs)}")
-        
-        self.documents = all_docs
-        return all_docs
+                for i in range(len(res["documents"][0])):
+                    results.append({
+                        "collection": coll_name,
+                        "document": res["documents"][0][i],
+                        "metadata": res["metadatas"][0][i],
+                        "distance": res["distances"][0][i]
+                    })
+            except:
+                continue
+                
+        return sorted(results, key=lambda x: x["distance"])[:n_results]
