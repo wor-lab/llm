@@ -32,7 +32,7 @@ class WBCoreOrchestrator:
             "langchain-community",
             "chromadb>=0.4.22",
             "datasets>=2.16.0",
-            "transformers>=4.36.0",
+            "transformers>=4.51.0",
             "torch>=2.1.0",
             "fastapi>=0.109.0",
             "uvicorn>=0.27.0",
@@ -123,7 +123,7 @@ def main():
     USAGE IN COLAB:
     
     from run_colab import main
-    main(ngrok_token="YOUR_NGROK_TOKEN")
+    main(ngrok_token="1vikehg18jsR9XrEzKEybCifEr9_AWWFzoCD58Xa151mXfLd")
     """
     
     # Get NGROK token from user input in Colab
