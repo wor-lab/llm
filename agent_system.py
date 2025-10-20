@@ -50,9 +50,9 @@ class ModelLoader:
     
     @staticmethod
     def load_model():
-        logger.info("🔄 Loading Qwen2.5-1.5B-Instruct...")
+        logger.info("🔄 Loading Qwen-Qwen3-1.7B...")
         
-        model_name = "Qwen/Qwen2.5-1.5B-Instruct"
+        model_name = "Qwen/Qwen3-1.7B"
         
         tokenizer = AutoTokenizer.from_pretrained(
             model_name,
