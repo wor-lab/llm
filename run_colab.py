@@ -41,20 +41,20 @@ class NexusOrchestrator:
         logger.info("🔧 Installing dependencies...")
         
         packages = [
-            'langchain>=0.1.0',
-            'langgraph>=0.0.40',
-            'chromadb>=0.4.22',
-            'transformers>=4.36.0',
-            'torch>=2.1.0',
-            'fastapi>=0.108.0',
-            'uvicorn>=0.25.0',
-            'pyngrok>=7.0.0',
-            'datasets>=2.16.0',
-            'sentence-transformers>=2.2.2',
-            'accelerate>=0.25.0',
-            'bitsandbytes>=0.41.0',
-            'pydantic>=2.5.0',
-            'python-dotenv>=1.0.0',
+            'langchain',
+            'langgraph',
+            'chromadb',
+            'transformers',
+            'torch',
+            'fastapi',
+            'uvicorn',
+            'pyngrok',
+            'datasets',
+            'sentence-transformers',
+            'accelerate',
+            'bitsandbytes',
+            'pydantic',
+            'python-dotenv',
         ]
         
         for package in packages:
