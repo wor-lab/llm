@@ -1,247 +1,159 @@
 """
-WB AI CORPORATION — DATA INTELLIGENCE PIPELINE
-Agentic RAG Implementation with Multi-Step Reasoning
-
-MISSION: Advanced retrieval-augmented generation
-AGENT: DataSynth + CodeArchitect
+WB AI CORPORATION - RAG Engine
+ChromaDB Integration + Retrieval Pipeline
+Production Vector Search System
 """
 
-from typing import List, Dict, Optional
-from dataclasses import dataclass
-import chromadb
-from sentence_transformers import SentenceTransformer
 import logging
+from typing import List, Dict, Any
+import chromadb
+from chromadb.config import Settings
+from chromadb.utils import embedding_functions
+from langchain.embeddings import HuggingFaceEmbeddings
+from transformers import AutoTokenizer, AutoModelForCausalLM
+import torch
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-@dataclass
-class RetrievalResult:
-    """Structure for retrieval results"""
-    document: str
-    metadata: dict
-    score: float
-    source: str
-
-class AgenticRAGPipeline:
-    """
-    Multi-stage RAG with:
-    - Query decomposition
-    - Multi-source retrieval
-    - Reranking
-    - Answer synthesis
-    """
+class RAGEngine:
+    """Enterprise RAG pipeline with ChromaDB"""
     
-    def __init__(
-        self,
-        chroma_client: chromadb.PersistentClient,
-        embedder: SentenceTransformer,
-        llm
-    ):
-        self.client = chroma_client
-        self.embedder = embedder
-        self.llm = llm
+    def __init__(self, chroma_path: str, model_name: str):
+        self.chroma_path = chroma_path
+        self.model_name = model_name
         
-        self.collections = ['humaneval', 'mbpp', 'swe_bench', 'bigcodebench']
+        # Initialize ChromaDB
+        logger.info("Initializing ChromaDB...")
+        self.client = chromadb.PersistentClient(
+            path=chroma_path,
+            settings=Settings(
+                anonymized_telemetry=False,
+                allow_reset=True
+            )
+        )
+        
+        # Initialize embeddings
+        logger.info("Loading embedding model...")
+        self.embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(
+            model_name="BAAI/bge-small-en-v1.5"
+        )
+        
+        # Create collection
+        self.collection = self.client.get_or_create_collection(
+            name="code_intelligence",
+            embedding_function=self.embedding_function,
+            metadata={"hnsw:space": "cosine"}
+        )
+        
+        # Initialize LLM
+        logger.info(f"Loading LLM: {model_name}...")
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=torch.float16,
+            device_map="auto",
+            load_in_8bit=True
+        )
+        
+        logger.info("✅ RAG Engine initialized")
     
-    def decompose_query(self, query: str) -> List[str]:
-        """
-        Break complex queries into sub-queries
-        """
-        logger.info("🔍 Decomposing query...")
+    def index_documents(self, documents: List[Any]) -> None:
+        """Index documents in ChromaDB"""
+        logger.info(f"Indexing {len(documents)} documents...")
         
-        # Simple decomposition (can be enhanced with LLM)
-        sub_queries = [query]
-        
-        # Extract key programming concepts
-        keywords = []
-        code_patterns = ['function', 'class', 'algorithm', 'implement', 'solve']
-        
-        for pattern in code_patterns:
-            if pattern in query.lower():
-                keywords.append(pattern)
-        
-        if keywords:
-            sub_queries.append(f"Examples of {' and '.join(keywords)}")
-        
-        return sub_queries
-    
-    def retrieve_multi_source(
-        self,
-        queries: List[str],
-        top_k: int = 5
-    ) -> List[RetrievalResult]:
-        """
-        Retrieve from multiple collections and merge results
-        """
-        logger.info(f"📚 Retrieving from {len(self.collections)} sources...")
-        
-        all_results = []
-        
-        for query in queries:
-            query_embedding = self.embedder.encode([query]).tolist()
+        batch_size = 100
+        for i in range(0, len(documents), batch_size):
+            batch = documents[i:i + batch_size]
             
-            for col_name in self.collections:
-                try:
-                    collection = self.client.get_collection(col_name)
-                    
-                    results = collection.query(
-                        query_embeddings=query_embedding,
-                        n_results=top_k
-                    )
-                    
-                    if results['documents']:
-                        for doc, meta, dist in zip(
-                            results['documents'][0],
-                            results['metadatas'][0],
-                            results['distances'][0]
-                        ):
-                            all_results.append(
-                                RetrievalResult(
-                                    document=doc,
-                                    metadata=meta,
-                                    score=1 - dist,  # Convert distance to similarity
-                                    source=col_name
-                                )
-                            )
-                except Exception as e:
-                    logger.warning(f"⚠️ Error querying {col_name}: {e}")
+            ids = [doc.id for doc in batch]
+            texts = [doc.embedding_text for doc in batch]
+            metadatas = [doc.metadata for doc in batch]
+            
+            self.collection.add(
+                ids=ids,
+                documents=texts,
+                metadatas=metadatas
+            )
+            
+            if (i + batch_size) % 500 == 0:
+                logger.info(f"Indexed {i + batch_size} documents...")
         
-        # Sort by score
-        all_results.sort(key=lambda x: x.score, reverse=True)
-        
-        return all_results[:top_k * 2]
+        logger.info(f"✅ Indexed {self.collection.count()} total documents")
     
-    def rerank_results(
-        self,
-        query: str,
-        results: List[RetrievalResult],
-        top_k: int = 5
-    ) -> List[RetrievalResult]:
-        """
-        Rerank results using cross-encoder or relevance scoring
-        """
-        logger.info("🎯 Reranking results...")
+    def retrieve(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+        """Retrieve relevant documents"""
+        results = self.collection.query(
+            query_texts=[query],
+            n_results=top_k
+        )
         
-        # Simple reranking based on keyword overlap
-        query_words = set(query.lower().split())
+        documents = []
+        for i in range(len(results['ids'][0])):
+            documents.append({
+                'id': results['ids'][0][i],
+                'content': results['documents'][0][i],
+                'metadata': results['metadatas'][0][i],
+                'distance': results['distances'][0][i] if 'distances' in results else None
+            })
         
-        for result in results:
-            doc_words = set(result.document.lower().split())
-            overlap = len(query_words & doc_words)
-            result.score = result.score * (1 + overlap * 0.1)
-        
-        results.sort(key=lambda x: x.score, reverse=True)
-        
-        return results[:top_k]
+        return documents
     
-    def synthesize_answer(
-        self,
-        query: str,
-        retrieved_docs: List[RetrievalResult]
-    ) -> Dict:
-        """
-        Generate final answer with citations
-        """
-        logger.info("✍️ Synthesizing answer...")
+    def generate_response(self, query: str, context: List[Dict[str, Any]]) -> str:
+        """Generate response using retrieved context"""
         
-        # Build context from top documents
-        context_parts = []
-        for i, doc in enumerate(retrieved_docs, 1):
-            context_parts.append(
-                f"[Source {i} - {doc.source}]:\n{doc.document}\n"
+        # Build prompt with context
+        context_text = "\n\n".join([
+            f"[Source: {doc['metadata'].get('source', 'unknown')}]\n{doc['content'][:500]}"
+            for doc in context[:3]
+        ])
+        
+        prompt = f"""You are an expert code assistant. Answer the following query using the provided context.
+
+Context:
+{context_text}
+
+Query: {query}
+
+Answer:"""
+
+        inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=2048)
+        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+        
+        with torch.no_grad():
+            outputs = self.model.generate(
+                **inputs,
+                max_new_tokens=512,
+                temperature=0.7,
+                do_sample=True,
+                top_p=0.9,
+                pad_token_id=self.tokenizer.eos_token_id
             )
         
-        context = "\n".join(context_parts)
+        response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
         
-        prompt = f"""You are WB AI Corporation's code intelligence system.
-Use the provided sources to answer the question accurately.
-
-Sources:
-{context}
-
-Question: {query}
-
-Provide a comprehensive answer with code examples where appropriate:
-"""
+        # Extract answer (remove prompt)
+        answer = response.split("Answer:")[-1].strip()
         
-        answer = self.llm.invoke(prompt)
+        return answer
+    
+    def query(self, question: str, top_k: int = 5) -> Dict[str, Any]:
+        """End-to-end RAG query"""
+        logger.info(f"Processing query: {question[:100]}...")
+        
+        # Retrieve
+        context = self.retrieve(question, top_k=top_k)
+        
+        # Generate
+        answer = self.generate_response(question, context)
         
         return {
-            'query': query,
+            'question': question,
             'answer': answer,
             'sources': [
                 {
-                    'text': doc.document[:200] + '...',
-                    'source': doc.source,
-                    'score': round(doc.score, 3)
+                    'source': doc['metadata'].get('source'),
+                    'relevance': 1 - doc['distance'] if doc['distance'] else None
                 }
-                for doc in retrieved_docs
-            ],
-            'confidence': sum(doc.score for doc in retrieved_docs) / len(retrieved_docs)
+                for doc in context
+            ]
         }
-    
-    def process(self, query: str, top_k: int = 5) -> Dict:
-        """
-        Full agentic RAG pipeline
-        """
-        logger.info(f"🚀 Processing query: {query[:50]}...")
-        
-        # Step 1: Decompose query
-        sub_queries = self.decompose_query(query)
-        
-        # Step 2: Multi-source retrieval
-        retrieved_docs = self.retrieve_multi_source(sub_queries, top_k=top_k)
-        
-        # Step 3: Rerank
-        reranked_docs = self.rerank_results(query, retrieved_docs, top_k=top_k)
-        
-        # Step 4: Synthesize answer
-        result = self.synthesize_answer(query, reranked_docs)
-        
-        logger.info("✅ Pipeline complete")
-        
-        return result
-
-class RAGOrchestrator:
-    """High-level RAG interface"""
-    
-    def __init__(self):
-        logger.info("🔧 Initializing RAG Pipeline...")
-        
-        # Load dependencies
-        from agent_system import ModelLoader
-        
-        self.llm, _ = ModelLoader.load_model()
-        self.chroma_client = chromadb.PersistentClient(path="./chroma_db")
-        self.embedder = SentenceTransformer('all-MiniLM-L6-v2')
-        
-        # Initialize pipeline
-        self.pipeline = AgenticRAGPipeline(
-            chroma_client=self.chroma_client,
-            embedder=self.embedder,
-            llm=self.llm
-        )
-    
-    def query(self, question: str) -> Dict:
-        """Process RAG query"""
-        return self.pipeline.process(question)
-
-if __name__ == "__main__":
-    rag = RAGOrchestrator()
-    
-    test_queries = [
-        "How do I implement binary search in Python?",
-        "Explain the time complexity of quicksort",
-        "Write a function to reverse a linked list"
-    ]
-    
-    for query in test_queries:
-        result = rag.query(query)
-        
-        print(f"\n{'='*70}")
-        print(f"Q: {result['query']}")
-        print(f"\nA: {result['answer'][:500]}...")
-        print(f"\nConfidence: {result['confidence']:.2%}")
-        print(f"Sources: {len(result['sources'])}")
-        print(f"{'='*70}\n")
