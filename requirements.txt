@@ -5,7 +5,7 @@
 langchain
 langchain-community
 langgraph
-langchain-huggingface
+langchain-core
 
 # Vector Store
 chromadb
@@ -22,9 +22,11 @@ fastapi
 uvicorn
 pydantic
 pyngrok
+python-multipart
 
 # Data Processing
 datasets
+huggingface-hub
 pandas
 numpy
 
@@ -32,3 +34,8 @@ numpy
 python-dotenv
 httpx
 tqdm
+tiktoken
+aiofiles
+tenacity
+loguru
+prometheus-fastapi-instrumentator
