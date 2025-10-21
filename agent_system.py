@@ -1,172 +1,120 @@
-"""
-WB AI Corporation - Agentic System Module
-Agent: CodeArchitect
-Purpose: LangGraph-based multi-agent orchestration for complex code tasks
-"""
-
-import os
-from typing import TypedDict, Annotated, Sequence
-from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
-from langgraph.graph import StateGraph, END
-from langgraph.prebuilt import ToolExecutor
-from rag_pipeline import RAGPipeline
-from loguru import logger
-from dotenv import load_dotenv
-
-load_dotenv()
+from typing import Dict, Any, List, Optional
+from dataclasses import dataclass
+from langchain_community.llms.huggingface_pipeline import HuggingFacePipeline
+from langchain_community.vectorstores import Chroma
 
 
-class AgentState(TypedDict):
-    """State schema for agent graph"""
-    messages: Annotated[Sequence[BaseMessage], "Message history"]
-    query: str
-    context: str
-    analysis: str
-    final_response: str
-    iteration: int
+@dataclass
+class CodeArchitect:
+    llm: HuggingFacePipeline
 
-
-class WBAgentSystem:
-    """LangGraph-powered agentic orchestration"""
-    
-    def __init__(self, rag_pipeline: RAGPipeline):
-        self.rag = rag_pipeline
-        self.max_iterations = 3
-        
-        # Build agent graph
-        self.graph = self._build_graph()
-        logger.info("Agent System initialized | Graph nodes: 4")
-    
-    def _build_graph(self) -> StateGraph:
-        """Construct LangGraph workflow"""
-        workflow = StateGraph(AgentState)
-        
-        # Define nodes
-        workflow.add_node("retrieve", self._retrieve_node)
-        workflow.add_node("analyze", self._analyze_node)
-        workflow.add_node("generate", self._generate_node)
-        workflow.add_node("validate", self._validate_node)
-        
-        # Define edges
-        workflow.set_entry_point("retrieve")
-        workflow.add_edge("retrieve", "analyze")
-        workflow.add_edge("analyze", "generate")
-        workflow.add_conditional_edges(
-            "generate",
-            self._should_continue,
-            {
-                "validate": "validate",
-                "end": END
-            }
+    def synthesize(self, spec: str) -> str:
+        prompt = (
+            "You are CodeArchitect. Produce robust, minimal, production-grade code for the following spec.\n"
+            "Return only code blocks and necessary comments.\n\n"
+            f"Spec:\n{spec}\n"
         )
-        workflow.add_edge("validate", END)
-        
-        return workflow.compile()
-    
-    def _retrieve_node(self, state: AgentState) -> AgentState:
-        """Node 1: Retrieve relevant context"""
-        logger.info("Agent: Retrieve | Fetching context...")
-        
-        docs = self.rag.retrieve_context(state["query"])
-        context = "\n\n".join([doc["content"] for doc in docs[:3]])
-        
-        state["context"] = context
-        state["messages"].append(
-            AIMessage(content=f"Retrieved {len(docs)} relevant documents")
-        )
-        
-        return state
-    
-    def _analyze_node(self, state: AgentState) -> AgentState:
-        """Node 2: Analyze query and context"""
-        logger.info("Agent: Analyze | Processing query...")
-        
-        analysis = f"""
-Query Analysis:
-- Type: Code generation/analysis
-- Context relevance: High
-- Approach: RAG-augmented generation
-- Confidence: 0.85
-"""
-        
-        state["analysis"] = analysis
-        state["messages"].append(AIMessage(content="Analysis complete"))
-        
-        return state
-    
-    def _generate_node(self, state: AgentState) -> AgentState:
-        """Node 3: Generate response using RAG"""
-        logger.info("Agent: Generate | Creating response...")
-        
-        result = self.rag.query(state["query"])
-        
-        state["final_response"] = result["answer"]
-        state["iteration"] = state.get("iteration", 0) + 1
-        state["messages"].append(AIMessage(content=result["answer"]))
-        
-        return state
-    
-    def _validate_node(self, state: AgentState) -> AgentState:
-        """Node 4: Validate and finalize response"""
-        logger.info("Agent: Validate | Finalizing...")
-        
-        state["messages"].append(
-            AIMessage(content="Response validated and ready")
-        )
-        
-        return state
-    
-    def _should_continue(self, state: AgentState) -> str:
-        """Decision function for conditional routing"""
-        if state["iteration"] >= self.max_iterations:
-            return "end"
-        
-        # Simple validation: check if response is substantial
-        if len(state.get("final_response", "")) > 50:
-            return "validate"
-        
-        return "end"
-    
-    def execute(self, query: str) -> dict:
-        """Execute agent workflow"""
-        logger.info(f"Agent System executing: {query[:100]}...")
-        
-        initial_state = {
-            "messages": [HumanMessage(content=query)],
-            "query": query,
-            "context": "",
-            "analysis": "",
-            "final_response": "",
-            "iteration": 0
-        }
-        
-        try:
-            final_state = self.graph.invoke(initial_state)
-            
-            return {
-                "response": final_state["final_response"],
-                "context": final_state["context"],
-                "analysis": final_state["analysis"],
-                "iterations": final_state["iteration"],
-                "status": "success"
-            }
-            
-        except Exception as e:
-            logger.error(f"Agent execution failed: {e}")
-            return {
-                "response": f"Agent error: {str(e)}",
-                "status": "error"
-            }
+        return self.llm.invoke(prompt)
 
 
-if __name__ == "__main__":
-    from dataset_loader import DatasetLoader
-    
-    loader = DatasetLoader()
-    vectorstore = loader.load_existing()
-    
-    rag = RAGPipeline(vectorstore)
-    agent_system = WBAgentSystem(rag)
-    
-    result = agent_system.execute("Create a binary search algorithm in Python")
-    print(f"Response: {result['response']}")
+@dataclass
+class OpsManager:
+    store: Optional[Chroma]
+    def status(self) -> Dict[str, Any]:
+        info = {"collections": [], "count": 0}
+        if self.store is not None:
+            try:
+                info["collections"] = [self.store._collection.name]  # type: ignore
+                info["count"] = self.store._collection.count()  # type: ignore
+            except Exception:
+                pass
+        return info
+
+
+@dataclass
+class SecAnalyst:
+    llm: HuggingFacePipeline
+    def audit_text(self, text: str) -> Dict[str, Any]:
+        prompt = (
+            "Security Audit: identify secrets, hardcoded credentials, insecure patterns, and supply a list of risks.\n"
+            "Return JSON with keys: secrets(list), insecure_patterns(list), risk(low|medium|high).\n\n"
+            f"Text:\n{text}\n"
+        )
+        return {"report": self.llm.invoke(prompt)}
+
+
+@dataclass
+class DesignMind:
+    def rag_answer_template(self) -> str:
+        return (
+            "Format answers with concise sections: Overview, Key Points, References.\n"
+            "Avoid verbosity. Keep to-the-point engineering language.\n"
+        )
+
+
+@dataclass
+class WordSmith:
+    llm: HuggingFacePipeline
+    def reframe(self, text: str) -> str:
+        prompt = (
+            "Rewrite the following into clear, executive-brief engineering prose.\n\n"
+            f"{text}\n"
+        )
+        return self.llm.invoke(prompt)
+
+
+@dataclass
+class DataSynth:
+    store: Optional[Chroma]
+    def diagnostics(self, queries: List[str]) -> Dict[str, Any]:
+        stats = {"queries": len(queries), "retrieval": []}
+        if self.store is None:
+            return stats
+        retriever = self.store.as_retriever(search_kwargs={"k": 4})
+        for q in queries:
+            docs = retriever.get_relevant_documents(q)
+            stats["retrieval"].append({"q": q, "hits": len(docs)})
+        return stats
+
+
+@dataclass
+class Analyst:
+    def corpus_strategy(self) -> str:
+        return (
+            "Prioritize HumanEval-X and MBPP for function-level tasks; incorporate SWE-bench for repository-level context.\n"
+            "Deduplicate overlapping samples and cap Stack v2 ingestion via streaming head to manage footprint.\n"
+        )
+
+
+@dataclass
+class AutoBot:
+    components: Dict[str, Any]
+    def execute(self, task_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if task_type == "codegen":
+            return {"result": self.components["CodeArchitect"].synthesize(payload.get("spec", ""))}
+        if task_type == "audit":
+            return {"result": self.components["SecAnalyst"].audit_text(payload.get("text", ""))}
+        if task_type == "rewrite":
+            return {"result": self.components["WordSmith"].reframe(payload.get("text", ""))}
+        if task_type == "ops_status":
+            return {"result": self.components["OpsManager"].status()}
+        if task_type == "diag":
+            return {"result": self.components["DataSynth"].diagnostics(payload.get("queries", []))}
+        if task_type == "strategy":
+            return {"result": self.components["Analyst"].corpus_strategy()}
+        return {"error": f"unknown task_type: {task_type}"}
+
+
+def build_agents(llm: HuggingFacePipeline, store: Optional[Chroma]) -> Dict[str, Any]:
+    agents = {
+        "CodeArchitect": CodeArchitect(llm=llm),
+        "OpsManager": OpsManager(store=store),
+        "SecAnalyst": SecAnalyst(llm=llm),
+        "DesignMind": DesignMind(),
+        "WordSmith": WordSmith(llm=llm),
+        "DataSynth": DataSynth(store=store),
+        "Analyst": Analyst(),
+        "AutoBot": None,  # fill after instantiation
+    }
+    agents["AutoBot"] = AutoBot(components=agents)
+    return agents
