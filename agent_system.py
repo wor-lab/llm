@@ -1,156 +1,201 @@
 """
-WB AI CORPORATION - LANGGRAPH AGENT SYSTEM
-Agent: CodeArchitect + AutoBot
-Purpose: Multi-agent orchestration with LangGraph
+WB AI Corporation - Multi-Agent System
+LangGraph-based orchestration of 8 specialized agents.
+Architecture: State machine with agent coordination and task routing.
 """
 
-import os
-from typing import TypedDict, Annotated, Sequence
-from langgraph.graph import StateGraph, END
-from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
-from rag_pipeline import WBRAGPipeline
-from dotenv import load_dotenv
+from typing import TypedDict, Annotated, List, Dict, Any
+from enum import Enum
 import operator
 
-load_dotenv()
+from langgraph.graph import StateGraph, END
+from langchain.schema import Document
+from loguru import logger
+
+from rag_pipeline import ProductionRAGPipeline
+
+
+class AgentType(Enum):
+    """Available WB AI agents."""
+    CODE_ARCHITECT = "CodeArchitect"
+    OPS_MANAGER = "OpsManager"
+    SEC_ANALYST = "SecAnalyst"
+    DESIGN_MIND = "DesignMind"
+    WORD_SMITH = "WordSmith"
+    DATA_SYNTH = "DataSynth"
+    ANALYST = "Analyst"
+    AUTO_BOT = "AutoBot"
 
 
 class AgentState(TypedDict):
-    """Agent state schema"""
-    messages: Annotated[Sequence[BaseMessage], operator.add]
-    query: str
-    rag_result: dict
-    iterations: int
-    final_answer: str
+    """Shared state across all agents."""
+    task: str
+    context: List[Document]
+    current_agent: str
+    messages: Annotated[List[str], operator.add]
+    result: str
+    metadata: Dict[str, Any]
 
 
 class WBAgentSystem:
-    """LangGraph-based agentic orchestration"""
+    """
+    Multi-agent orchestration system with:
+    - Task routing based on keywords
+    - Agent specialization
+    - State management via LangGraph
+    - RAG integration
+    """
     
-    def __init__(self):
-        self.rag_pipeline = WBRAGPipeline()
-        self.max_iterations = int(os.getenv("MAX_ITERATIONS", 5))
+    AGENT_PROMPTS = {
+        AgentType.CODE_ARCHITECT: """You are CodeArchitect - elite software engineer.
+Specialization: Complex systems (Python, JS, Rust, Go), APIs, architecture.
+Task: {task}
+Context: {context}
+Output production-grade code with type hints, error handling, and documentation.""",
+
+        AgentType.OPS_MANAGER: """You are OpsManager - infrastructure expert.
+Specialization: CI/CD, cloud (AWS/GCP), containers, Kubernetes, monitoring.
+Task: {task}
+Context: {context}
+Provide deployment configs, infrastructure-as-code, and operational best practices.""",
+
+        AgentType.SEC_ANALYST: """You are SecAnalyst - security specialist.
+Specialization: Penetration testing, security audits, threat modeling.
+Task: {task}
+Context: {context}
+Identify vulnerabilities, provide mitigation strategies, and security hardening steps.""",
+
+        AgentType.DESIGN_MIND: """You are DesignMind - UX/UI expert.
+Specialization: User experience, Tailwind CSS, Figma, design systems.
+Task: {task}
+Context: {context}
+Create intuitive designs, responsive layouts, and brand-consistent interfaces.""",
+
+        AgentType.WORD_SMITH: """You are WordSmith - content strategist.
+Specialization: Technical documentation, SEO, marketing content.
+Task: {task}
+Context: {context}
+Produce clear, professional, and SEO-optimized content.""",
+
+        AgentType.DATA_SYNTH: """You are DataSynth - data scientist.
+Specialization: Analysis (pandas), SQL, dashboards, ML models.
+Task: {task}
+Context: {context}
+Provide data-driven insights, visualizations, and statistical analysis.""",
+
+        AgentType.ANALYST: """You are Analyst - business strategist.
+Specialization: Market analysis, business plans, forecasting.
+Task: {task}
+Context: {context}
+Deliver actionable strategies, market insights, and growth plans.""",
+
+        AgentType.AUTO_BOT: """You are AutoBot - automation engineer.
+Specialization: API integration, workflows (FastAPI, n8n), task automation.
+Task: {task}
+Context: {context}
+Build automated workflows, API connectors, and integration solutions."""
+    }
+    
+    ROUTING_KEYWORDS = {
+        AgentType.CODE_ARCHITECT: ["code", "python", "api", "function", "class", "algorithm", "architecture"],
+        AgentType.OPS_MANAGER: ["deploy", "docker", "kubernetes", "ci/cd", "infrastructure", "cloud"],
+        AgentType.SEC_ANALYST: ["security", "vulnerability", "audit", "penetration", "threat", "encryption"],
+        AgentType.DESIGN_MIND: ["design", "ui", "ux", "tailwind", "figma", "interface", "responsive"],
+        AgentType.WORD_SMITH: ["document", "write", "seo", "content", "marketing", "blog"],
+        AgentType.DATA_SYNTH: ["data", "analysis", "pandas", "sql", "dashboard", "visualization"],
+        AgentType.ANALYST: ["business", "strategy", "market", "forecast", "plan", "growth"],
+        AgentType.AUTO_BOT: ["automate", "workflow", "integration", "n8n", "webhook", "cron"]
+    }
+    
+    def __init__(self, rag_pipeline: ProductionRAGPipeline):
+        self.rag = rag_pipeline
         self.graph = self._build_graph()
+        logger.info("WB Agent System initialized with 8 agents")
+    
+    def _route_task(self, state: AgentState) -> AgentType:
+        """Intelligent task routing based on keywords."""
+        task_lower = state["task"].lower()
+        scores = {}
         
+        for agent, keywords in self.ROUTING_KEYWORDS.items():
+            score = sum(1 for kw in keywords if kw in task_lower)
+            scores[agent] = score
+        
+        selected = max(scores, key=scores.get)
+        logger.info(f"Task routed to: {selected.value}")
+        return selected
+    
+    def _execute_agent(self, state: AgentState, agent_type: AgentType) -> AgentState:
+        """Execute specific agent with RAG."""
+        prompt = self.AGENT_PROMPTS[agent_type].format(
+            task=state["task"],
+            context="\n".join([doc.page_content[:300] for doc in state["context"][:3]])
+        )
+        
+        rag_result = self.rag.query(prompt)
+        
+        state["current_agent"] = agent_type.value
+        state["messages"].append(f"[{agent_type.value}] Processing task...")
+        state["result"] = rag_result["answer"]
+        state["metadata"]["sources"] = rag_result["source_documents"]
+        
+        return state
+    
     def _build_graph(self) -> StateGraph:
-        """Construct agent workflow graph"""
+        """Build LangGraph state machine."""
         workflow = StateGraph(AgentState)
         
-        # Define nodes
-        workflow.add_node("analyze_query", self.analyze_query)
-        workflow.add_node("retrieve_context", self.retrieve_context)
-        workflow.add_node("generate_response", self.generate_response)
-        workflow.add_node("validate_output", self.validate_output)
+        # Define agent nodes
+        for agent in AgentType:
+            workflow.add_node(
+                agent.value,
+                lambda s, a=agent: self._execute_agent(s, a)
+            )
         
-        # Define edges
-        workflow.set_entry_point("analyze_query")
-        workflow.add_edge("analyze_query", "retrieve_context")
-        workflow.add_edge("retrieve_context", "generate_response")
-        workflow.add_edge("generate_response", "validate_output")
+        # Routing logic
+        def route_to_agent(state: AgentState):
+            agent = self._route_task(state)
+            return agent.value
         
-        # Conditional edge: retry or finish
-        workflow.add_conditional_edges(
-            "validate_output",
-            self.should_continue,
-            {
-                "continue": "retrieve_context",
-                "end": END
-            }
-        )
+        # Add conditional routing from START
+        workflow.set_conditional_entry_point(route_to_agent)
+        
+        # All agents lead to END
+        for agent in AgentType:
+            workflow.add_edge(agent.value, END)
         
         return workflow.compile()
     
-    def analyze_query(self, state: AgentState) -> AgentState:
-        """Query analysis node"""
-        print("[Analyst] Analyzing query intent...")
-        state["iterations"] = state.get("iterations", 0) + 1
+    def execute_task(self, task: str) -> Dict[str, Any]:
+        """Execute task through agent system."""
+        logger.info(f"Executing task: {task[:100]}...")
         
-        # Add analysis message
-        state["messages"].append(
-            AIMessage(content=f"[Query Analysis] Intent: Technical coding assistance")
-        )
-        return state
-    
-    def retrieve_context(self, state: AgentState) -> AgentState:
-        """RAG retrieval node"""
-        print("[DataSynth] Retrieving relevant context...")
+        # Retrieve relevant context via RAG
+        context_result = self.rag.query(task)
+        context_docs = [
+            Document(page_content=doc["content"], metadata=doc["metadata"])
+            for doc in context_result["source_documents"]
+        ]
         
-        docs = self.rag_pipeline.search_vectorstore(state["query"], k=5)
-        context = "\n\n".join([doc["content"][:500] for doc in docs])
-        
-        state["messages"].append(
-            AIMessage(content=f"[Context Retrieved] {len(docs)} documents found")
-        )
-        return state
-    
-    def generate_response(self, state: AgentState) -> AgentState:
-        """LLM generation node"""
-        print("[CodeArchitect] Generating response...")
-        
-        result = self.rag_pipeline.query(state["query"])
-        state["rag_result"] = result
-        state["final_answer"] = result["answer"]
-        
-        state["messages"].append(
-            AIMessage(content=f"[Generation] Response generated")
-        )
-        return state
-    
-    def validate_output(self, state: AgentState) -> AgentState:
-        """Output validation node"""
-        print("[SecAnalyst] Validating output quality...")
-        
-        # Simple validation: check response length
-        if len(state["final_answer"]) < 50:
-            state["messages"].append(
-                AIMessage(content="[Validation] Response too short - retry")
-            )
-        else:
-            state["messages"].append(
-                AIMessage(content="[Validation] Output validated - complete")
-            )
-        
-        return state
-    
-    def should_continue(self, state: AgentState) -> str:
-        """Decision function for graph routing"""
-        if state["iterations"] >= self.max_iterations:
-            return "end"
-        
-        if len(state["final_answer"]) < 50:
-            return "continue"
-        
-        return "end"
-    
-    def execute(self, query: str) -> dict:
-        """Execute agent workflow"""
-        print(f"\n[WB AI CORE] Initializing agent workflow...")
-        
-        initial_state = {
-            "messages": [HumanMessage(content=query)],
-            "query": query,
-            "rag_result": {},
-            "iterations": 0,
-            "final_answer": ""
+        initial_state: AgentState = {
+            "task": task,
+            "context": context_docs,
+            "current_agent": "",
+            "messages": [],
+            "result": "",
+            "metadata": {}
         }
         
         final_state = self.graph.invoke(initial_state)
         
         return {
-            "query": query,
-            "answer": final_state["final_answer"],
-            "iterations": final_state["iterations"],
-            "sources": final_state["rag_result"].get("source_documents", []),
-            "workflow_trace": [msg.content for msg in final_state["messages"]]
+            "agent": final_state["current_agent"],
+            "result": final_state["result"],
+            "messages": final_state["messages"],
+            "sources": final_state["metadata"].get("sources", [])
         }
 
 
-if __name__ == "__main__":
-    agent = WBAgentSystem()
-    result = agent.execute("Write a Python function to implement JWT authentication")
-    
-    print("\n" + "="*80)
-    print("[WB AI AGENT RESPONSE]")
-    print("="*80)
-    print(result["answer"])
-    print("\n[Workflow Trace]:", result["workflow_trace"])
+def initialize_agent_system(rag_pipeline: ProductionRAGPipeline) -> WBAgentSystem:
+    """Factory function to create agent system."""
+    return WBAgentSystem(rag_pipeline)
