@@ -1,196 +1,145 @@
+"""
+WB AI CORPORATION - RAG PIPELINE MODULE
+Agent: CodeArchitect
+Purpose: Core RAG retrieval and generation pipeline
+"""
+
 import os
-import json
-from typing import Optional, List, Dict, Any, Tuple
-
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
-from langchain_community.llms import HuggingFacePipeline
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from typing import List, Dict, Any
 from langchain_community.vectorstores import Chroma
-from langchain.schema import Document
+from langchain_huggingface import HuggingFaceEmbeddings, HuggingFacePipeline
+from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain
+from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+import torch
+from dotenv import load_dotenv
 
-# Optional OpenAI-compatible path if MODEL_SERVER_API_BASE is provided
-OPENAI_COMPAT_AVAILABLE = False
-try:
-    from langchain_openai import ChatOpenAI
-    OPENAI_COMPAT_AVAILABLE = True
-except Exception:
-    OPENAI_COMPAT_AVAILABLE = False
+load_dotenv()
 
 
-def env(name: str, default: Optional[str] = None) -> Optional[str]:
-    v = os.getenv(name, default)
-    return v
-
-
-def as_bool(v: Optional[str], default: bool = False) -> bool:
-    if v is None:
-        return default
-    return str(v).lower() in {"1", "true", "yes", "y"}
-
-
-class ModelFactory:
-    """
-    Provides an LLM for LangChain usage.
-    - Default: local HuggingFace pipeline (Qwen3-1.7B).
-    - Optional: OpenAI-compatible base URL via MODEL_SERVER_API_BASE + MODEL_SERVER_API_KEY.
-    """
-
-    @staticmethod
-    def build_llm() -> Any:
-        api_base = env("MODEL_SERVER_API_BASE", "").strip()
-        api_key = env("MODEL_SERVER_API_KEY", "").strip()
-        model_name = env("MODEL_ID", "Qwen/Qwen3-1.7B-Instruct")
-        temperature = float(env("TEMPERATURE", "0.2"))
-        max_new_tokens = int(env("MAX_NEW_TOKENS", "512"))
-
-        # Remote (OpenAI-compatible) path if configured
-        if api_base and api_key and OPENAI_COMPAT_AVAILABLE:
-            # Make it compatible with langchain_openai
-            os.environ["OPENAI_API_KEY"] = api_key
-            # langchain_openai uses "base_url"
-            llm = ChatOpenAI(
-                base_url=api_base,
-                model=env("OPENAI_COMPAT_MODEL", model_name),
-                temperature=temperature,
-                max_tokens=max_new_tokens,
-            )
-            return llm
-
-        # Local HF pipeline path
-        device_map = env("DEVICE_MAP", "auto")
-        torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype=torch_dtype,
-            device_map=device_map,
-            trust_remote_code=True,
+class WBRAGPipeline:
+    """Enterprise-grade RAG inference pipeline"""
+    
+    def __init__(self):
+        self.persist_dir = os.getenv("CHROMA_PERSIST_DIR")
+        self.collection_name = os.getenv("COLLECTION_NAME")
+        self.model_name = os.getenv("MODEL_NAME")
+        
+        print("[CodeArchitect] Initializing RAG pipeline...")
+        self._load_embeddings()
+        self._load_vectorstore()
+        self._load_llm()
+        self._build_chain()
+        
+    def _load_embeddings(self):
+        """Load embedding model"""
+        self.embeddings = HuggingFaceEmbeddings(
+            model_name=os.getenv("EMBEDDING_MODEL"),
+            model_kwargs={'device': 'cuda' if torch.cuda.is_available() else 'cpu'},
+            encode_kwargs={'normalize_embeddings': True}
         )
-
-        gen_pipe = pipeline(
-            task="text-generation",
+        print("[OpsManager] Embeddings loaded")
+        
+    def _load_vectorstore(self):
+        """Load persisted ChromaDB"""
+        self.vectorstore = Chroma(
+            collection_name=self.collection_name,
+            embedding_function=self.embeddings,
+            persist_directory=self.persist_dir
+        )
+        print(f"[DataSynth] Vectorstore loaded: {self.vectorstore._collection.count()} documents")
+        
+    def _load_llm(self):
+        """Load Qwen3-1.7B local model"""
+        print(f"[CodeArchitect] Loading {self.model_name}...")
+        
+        tokenizer = AutoTokenizer.from_pretrained(
+            self.model_name,
+            trust_remote_code=True
+        )
+        
+        model = AutoModelForCausalLM.from_pretrained(
+            self.model_name,
+            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+            device_map="auto",
+            trust_remote_code=True,
+            load_in_8bit=True  # Memory optimization
+        )
+        
+        pipe = pipeline(
+            "text-generation",
             model=model,
             tokenizer=tokenizer,
-            max_new_tokens=max_new_tokens,
-            temperature=temperature,
-            do_sample=temperature > 0,
-            pad_token_id=tokenizer.eos_token_id,
+            max_new_tokens=int(os.getenv("MAX_TOKENS", 2048)),
+            temperature=float(os.getenv("TEMPERATURE", 0.7)),
+            top_p=0.95,
+            repetition_penalty=1.15
         )
-        llm = HuggingFacePipeline(pipeline=gen_pipe)
-        return llm
+        
+        self.llm = HuggingFacePipeline(pipeline=pipe)
+        print("[OpsManager] LLM loaded successfully")
+        
+    def _build_chain(self):
+        """Build RetrievalQA chain"""
+        template = """### WB AI CORPORATION - AGENTIC RAG SYSTEM ###
 
+Context from knowledge base:
+{context}
 
-class EmbeddingFactory:
-    """
-    HuggingFace Embeddings (CPU-friendly by default).
-    Default: BAAI/bge-small-en-v1.5 with normalize embeddings.
-    """
+User Query: {question}
 
-    @staticmethod
-    def build_embeddings():
-        embed_model = env("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
-        normalize = as_bool(env("EMBEDDING_NORMALIZE", "1"), True)
-        return HuggingFaceEmbeddings(
-            model_name=embed_model,
-            encode_kwargs={"normalize_embeddings": normalize},
+Instructions: You are an elite AI engineer at WB AI Corporation. Provide precise, actionable technical responses based on the retrieved context. Focus on code quality, scalability, and enterprise best practices.
+
+Response:"""
+
+        prompt = PromptTemplate(
+            template=template,
+            input_variables=["context", "question"]
         )
+        
+        self.qa_chain = RetrievalQA.from_chain_type(
+            llm=self.llm,
+            chain_type="stuff",
+            retriever=self.vectorstore.as_retriever(
+                search_kwargs={"k": 5}
+            ),
+            return_source_documents=True,
+            chain_type_kwargs={"prompt": prompt}
+        )
+        
+        print("[CodeArchitect] RAG chain assembled")
+        
+    def query(self, question: str) -> Dict[str, Any]:
+        """Execute RAG query"""
+        print(f"[Analyst] Processing query: {question[:100]}...")
+        
+        result = self.qa_chain.invoke({"query": question})
+        
+        return {
+            "answer": result["result"],
+            "source_documents": [
+                {
+                    "content": doc.page_content[:200],
+                    "metadata": doc.metadata
+                }
+                for doc in result["source_documents"]
+            ]
+        }
+    
+    def search_vectorstore(self, query: str, k: int = 5) -> List[Dict]:
+        """Direct vectorstore search"""
+        docs = self.vectorstore.similarity_search(query, k=k)
+        return [
+            {
+                "content": doc.page_content,
+                "metadata": doc.metadata
+            }
+            for doc in docs
+        ]
 
 
-class VectorStoreManager:
-    """
-    Manages Chroma vector stores per collection.
-    """
-
-    def __init__(self, embeddings):
-        self.embeddings = embeddings
-        self.persist_dir = env("CHROMA_DIR", "./data/chroma")
-        os.makedirs(self.persist_dir, exist_ok=True)
-        self._stores: Dict[str, Chroma] = {}
-
-    def get_store(self, collection: str) -> Chroma:
-        if collection not in self._stores:
-            self._stores[collection] = Chroma(
-                collection_name=collection,
-                embedding_function=self.embeddings,
-                persist_directory=self.persist_dir,
-            )
-        return self._stores[collection]
-
-    def add_texts(
-        self,
-        collection: str,
-        texts: List[str],
-        metadatas: Optional[List[Dict[str, Any]]] = None,
-        ids: Optional[List[str]] = None,
-    ) -> Tuple[int, int]:
-        store = self.get_store(collection)
-        store.add_texts(texts=texts, metadatas=metadatas, ids=ids)
-        store.persist()
-        count = store._collection.count()  # type: ignore
-        return len(texts), count
-
-    def search(
-        self, collection: str, query: str, k: int = 5
-    ) -> List[Document]:
-        store = self.get_store(collection)
-        return store.similarity_search(query, k=k)
-
-    def retriever(self, collection: str, k: int = 5):
-        return self.get_store(collection).as_retriever(search_kwargs={"k": k})
-
-    def stats(self) -> Dict[str, Any]:
-        stats = {}
-        for name, store in self._stores.items():
-            try:
-                stats[name] = {"count": store._collection.count()}  # type: ignore
-            except Exception:
-                stats[name] = {"count": None}
-        return stats
-
-
-def build_rag_chain(llm: Any):
-    """
-    Simple RAG chain given a prompt and retrieved context.
-    """
-    template = (
-        "You are an enterprise assistant. Use the provided context to answer precisely.\n\n"
-        "Context:\n{context}\n\n"
-        "Question: {question}\n\n"
-        "Answer concisely and cite dataset and source if applicable."
-    )
-    prompt = PromptTemplate.from_template(template)
-    return LLMChain(llm=llm, prompt=prompt)
-
-
-class RAGResources:
-    """
-    Shared RAG resources for agents/API.
-    """
-
-    def __init__(self):
-        self.llm = ModelFactory.build_llm()
-        self.embeddings = EmbeddingFactory.build_embeddings()
-        self.vs = VectorStoreManager(self.embeddings)
-
-    def default_retriever(self):
-        default_collection = env("DEFAULT_COLLECTION", "swe_bench")
-        k = int(env("TOP_K", "5"))
-        return self.vs.retriever(default_collection, k=k)
-
-    def rag_answer(self, question: str, collections: Optional[List[str]] = None, k: int = 5) -> Dict[str, Any]:
-        collections = collections or [env("DEFAULT_COLLECTION", "swe_bench")]
-        all_docs: List[Document] = []
-        for c in collections:
-            try:
-                all_docs.extend(self.vs.search(c, question, k=k))
-            except Exception:
-                continue
-
-        context = "\n---\n".join([f"[{d.metadata.get('dataset','unknown')}] {d.page_content[:2000]}" for d in all_docs])
-        chain = build_rag_chain(self.llm)
-        answer = chain.run({"context": context, "question": question})
-        return {"answer": answer, "context_docs": [d.metadata for d in all_docs]}
+if __name__ == "__main__":
+    rag = WBRAGPipeline()
+    response = rag.query("How do I implement a FastAPI endpoint with authentication?")
+    print("\n[WB AI Response]:")
+    print(response["answer"])
