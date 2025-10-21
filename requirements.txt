@@ -7,10 +7,15 @@ chromadb
 langchain
 langchain-community
 langgraph
+langchain-text-splitters
 fastapi
 uvicorn
 pydantic
+requests
 python-dotenv
 pyngrok
 tqdm
 huggingface_hub
+bandit
+pip-audit
+pytest
