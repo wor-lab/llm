@@ -2,17 +2,17 @@
 # Stack: Langchain, LangGraph, ChromaDB, Agentic RAG
 
 # Core Framework
-langchain==0.1.20
-langchain-community==0.0.38
-langgraph==0.0.65
-langchain-huggingface==0.0.3
+langchain
+langchain-community
+langgraph
+langchain-huggingface
 
 # Vector Store
 chromadb==0.4.24
-sentence-transformers==2.7.0
+sentence-transformers
 
 # LLM Inference
-transformers==4.40.0
+transformers
 torch==2.2.2
 accelerate==0.29.3
 bitsandbytes==0.43.1
