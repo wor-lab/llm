@@ -1,162 +1,196 @@
 import os
 import json
-from typing import Dict, List, TypedDict, Optional
+from typing import Optional, List, Dict, Any, Tuple
+
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
-from langchain_community.llms.huggingface_pipeline import HuggingFacePipeline
+from langchain_community.llms import HuggingFacePipeline
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
+from langchain.schema import Document
 from langchain.prompts import PromptTemplate
-from langgraph.graph import StateGraph, START, END
+from langchain.chains import LLMChain
+
+# Optional OpenAI-compatible path if MODEL_SERVER_API_BASE is provided
+OPENAI_COMPAT_AVAILABLE = False
+try:
+    from langchain_openai import ChatOpenAI
+    OPENAI_COMPAT_AVAILABLE = True
+except Exception:
+    OPENAI_COMPAT_AVAILABLE = False
 
 
-def _get_env(name: str, default: Optional[str] = None) -> str:
+def env(name: str, default: Optional[str] = None) -> Optional[str]:
     v = os.getenv(name, default)
-    if v is None:
-        raise RuntimeError(f"Missing required environment variable: {name}")
     return v
 
 
-def build_llm() -> HuggingFacePipeline:
-    model_id = _get_env("MODEL_ID")
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    tok = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
-    mdl = AutoModelForCausalLM.from_pretrained(
-        model_id,
-        torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-        device_map="auto" if torch.cuda.is_available() else None,
-        trust_remote_code=True,
-    )
-    gen_pipe = pipeline(
-        task="text-generation",
-        model=mdl,
-        tokenizer=tok,
-        max_new_tokens=1024,
-        temperature=0.2,
-        top_p=0.95,
-        repetition_penalty=1.05,
-        do_sample=True,
-        pad_token_id=tok.eos_token_id,
-    )
-    return HuggingFacePipeline(pipeline=gen_pipe)
+def as_bool(v: Optional[str], default: bool = False) -> bool:
+    if v is None:
+        return default
+    return str(v).lower() in {"1", "true", "yes", "y"}
 
 
-def build_retriever(chroma_dir: str, collection: str = "code-corpus", k: int = 8):
-    db = Chroma(collection_name=collection, persist_directory=chroma_dir)
-    return db.as_retriever(search_kwargs={"k": k})
+class ModelFactory:
+    """
+    Provides an LLM for LangChain usage.
+    - Default: local HuggingFace pipeline (Qwen3-1.7B).
+    - Optional: OpenAI-compatible base URL via MODEL_SERVER_API_BASE + MODEL_SERVER_API_KEY.
+    """
 
+    @staticmethod
+    def build_llm() -> Any:
+        api_base = env("MODEL_SERVER_API_BASE", "").strip()
+        api_key = env("MODEL_SERVER_API_KEY", "").strip()
+        model_name = env("MODEL_ID", "Qwen/Qwen3-1.7B-Instruct")
+        temperature = float(env("TEMPERATURE", "0.2"))
+        max_new_tokens = int(env("MAX_NEW_TOKENS", "512"))
 
-class RAGState(TypedDict):
-    question: str
-    subqueries: List[str]
-    contexts: List[str]
-    draft: str
-    final: str
-    citations: List[Dict]
+        # Remote (OpenAI-compatible) path if configured
+        if api_base and api_key and OPENAI_COMPAT_AVAILABLE:
+            # Make it compatible with langchain_openai
+            os.environ["OPENAI_API_KEY"] = api_key
+            # langchain_openai uses "base_url"
+            llm = ChatOpenAI(
+                base_url=api_base,
+                model=env("OPENAI_COMPAT_MODEL", model_name),
+                temperature=temperature,
+                max_tokens=max_new_tokens,
+            )
+            return llm
 
+        # Local HF pipeline path
+        device_map = env("DEVICE_MAP", "auto")
+        torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 
-PLAN_PROMPT = PromptTemplate.from_template(
-    "You are a senior engineer. Decompose the user query into 1-4 focused sub-queries for retrieval.\n"
-    "Return a JSON list of strings only.\n\n"
-    "Query: {question}\n"
-)
-
-GEN_PROMPT = PromptTemplate.from_template(
-    "System:\n"
-    "You are an enterprise code assistant. Use only the provided context to answer.\n"
-    "If the answer is uncertain, state the uncertainty and what evidence is missing.\n\n"
-    "Context:\n{context}\n\n"
-    "User:\n{question}\n\n"
-    "Answer:"
-)
-
-CRITIQUE_PROMPT = PromptTemplate.from_template(
-    "Act as a security and quality auditor. Identify unsupported claims, missing citations, and risks.\n"
-    "Return a JSON with keys: issues (list[str]), risk (low|medium|high).\n\n"
-    "Draft:\n{draft}\n"
-)
-
-
-def _llm_json(llm: HuggingFacePipeline, prompt: str) -> List[str]:
-    out = llm.invoke(prompt)
-    text = out if isinstance(out, str) else getattr(out, "content", str(out))
-    try:
-        js = json.loads(text.strip().split("```json")[-1].split("```")[0]) if "```json" in text else json.loads(text)
-    except Exception:
-        # naive list extraction fallback
-        lines = [l.strip("-* \n") for l in text.splitlines() if l.strip()]
-        js = [l for l in lines if len(l) > 2][:4]
-    if isinstance(js, list):
-        return [str(s) for s in js][:4]
-    return [str(js)]
-
-
-def _join_contexts(ctxs: List[str]) -> str:
-    if not ctxs:
-        return "No relevant context."
-    return "\n\n----\n\n".join(ctxs)
-
-
-def create_agentic_rag(chroma_dir: str):
-    retriever = build_retriever(chroma_dir)
-    llm = build_llm()
-
-    def plan_node(state: RAGState) -> RAGState:
-        prompt = PLAN_PROMPT.format(question=state["question"])
-        subs = _llm_json(llm, prompt)
-        return {**state, "subqueries": subs or [state["question"]]}
-
-    def retrieve_node(state: RAGState) -> RAGState:
-        contexts: List[str] = []
-        citations: List[Dict] = []
-        for q in state["subqueries"]:
-            docs = retriever.get_relevant_documents(q)
-            for d in docs:
-                contexts.append(d.page_content)
-                citations.append(d.metadata)
-        return {**state, "contexts": contexts, "citations": citations}
-
-    def generate_node(state: RAGState) -> RAGState:
-        context = _join_contexts(state.get("contexts", []))
-        prompt = GEN_PROMPT.format(context=context, question=state["question"])
-        draft = llm.invoke(prompt)
-        draft = draft if isinstance(draft, str) else getattr(draft, "content", str(draft))
-        return {**state, "draft": draft}
-
-    def critique_refine_node(state: RAGState) -> RAGState:
-        critique = llm.invoke(CRITIQUE_PROMPT.format(draft=state["draft"]))
-        critique = critique if isinstance(critique, str) else getattr(critique, "content", str(critique))
-        refine_prompt = (
-            "Revise the answer based on the critique while staying grounded in the context.\n"
-            f"Critique:\n{critique}\n\n"
-            f"Original Draft:\n{state['draft']}\n\n"
-            "Final Answer:"
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=torch_dtype,
+            device_map=device_map,
+            trust_remote_code=True,
         )
-        final = llm.invoke(refine_prompt)
-        final = final if isinstance(final, str) else getattr(final, "content", str(final))
-        return {**state, "final": final}
 
-    graph = StateGraph(RAGState)
-    graph.add_node("plan", plan_node)
-    graph.add_node("retrieve", retrieve_node)
-    graph.add_node("generate", generate_node)
-    graph.add_node("critique_refine", critique_refine_node)
-
-    graph.add_edge(START, "plan")
-    graph.add_edge("plan", "retrieve")
-    graph.add_edge("retrieve", "generate")
-    graph.add_edge("generate", "critique_refine")
-    graph.add_edge("critique_refine", END)
-
-    app = graph.compile()
-    return app, llm, retriever
+        gen_pipe = pipeline(
+            task="text-generation",
+            model=model,
+            tokenizer=tokenizer,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            do_sample=temperature > 0,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+        llm = HuggingFacePipeline(pipeline=gen_pipe)
+        return llm
 
 
-def run_agentic_rag(app, question: str) -> Dict:
-    state: RAGState = {"question": question, "subqueries": [], "contexts": [], "draft": "", "final": "", "citations": []}
-    result = app.invoke(state)
-    return {
-        "answer": result.get("final", result.get("draft", "")),
-        "citations": result.get("citations", []),
-        "subqueries": result.get("subqueries", []),
-    }
+class EmbeddingFactory:
+    """
+    HuggingFace Embeddings (CPU-friendly by default).
+    Default: BAAI/bge-small-en-v1.5 with normalize embeddings.
+    """
+
+    @staticmethod
+    def build_embeddings():
+        embed_model = env("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
+        normalize = as_bool(env("EMBEDDING_NORMALIZE", "1"), True)
+        return HuggingFaceEmbeddings(
+            model_name=embed_model,
+            encode_kwargs={"normalize_embeddings": normalize},
+        )
+
+
+class VectorStoreManager:
+    """
+    Manages Chroma vector stores per collection.
+    """
+
+    def __init__(self, embeddings):
+        self.embeddings = embeddings
+        self.persist_dir = env("CHROMA_DIR", "./data/chroma")
+        os.makedirs(self.persist_dir, exist_ok=True)
+        self._stores: Dict[str, Chroma] = {}
+
+    def get_store(self, collection: str) -> Chroma:
+        if collection not in self._stores:
+            self._stores[collection] = Chroma(
+                collection_name=collection,
+                embedding_function=self.embeddings,
+                persist_directory=self.persist_dir,
+            )
+        return self._stores[collection]
+
+    def add_texts(
+        self,
+        collection: str,
+        texts: List[str],
+        metadatas: Optional[List[Dict[str, Any]]] = None,
+        ids: Optional[List[str]] = None,
+    ) -> Tuple[int, int]:
+        store = self.get_store(collection)
+        store.add_texts(texts=texts, metadatas=metadatas, ids=ids)
+        store.persist()
+        count = store._collection.count()  # type: ignore
+        return len(texts), count
+
+    def search(
+        self, collection: str, query: str, k: int = 5
+    ) -> List[Document]:
+        store = self.get_store(collection)
+        return store.similarity_search(query, k=k)
+
+    def retriever(self, collection: str, k: int = 5):
+        return self.get_store(collection).as_retriever(search_kwargs={"k": k})
+
+    def stats(self) -> Dict[str, Any]:
+        stats = {}
+        for name, store in self._stores.items():
+            try:
+                stats[name] = {"count": store._collection.count()}  # type: ignore
+            except Exception:
+                stats[name] = {"count": None}
+        return stats
+
+
+def build_rag_chain(llm: Any):
+    """
+    Simple RAG chain given a prompt and retrieved context.
+    """
+    template = (
+        "You are an enterprise assistant. Use the provided context to answer precisely.\n\n"
+        "Context:\n{context}\n\n"
+        "Question: {question}\n\n"
+        "Answer concisely and cite dataset and source if applicable."
+    )
+    prompt = PromptTemplate.from_template(template)
+    return LLMChain(llm=llm, prompt=prompt)
+
+
+class RAGResources:
+    """
+    Shared RAG resources for agents/API.
+    """
+
+    def __init__(self):
+        self.llm = ModelFactory.build_llm()
+        self.embeddings = EmbeddingFactory.build_embeddings()
+        self.vs = VectorStoreManager(self.embeddings)
+
+    def default_retriever(self):
+        default_collection = env("DEFAULT_COLLECTION", "swe_bench")
+        k = int(env("TOP_K", "5"))
+        return self.vs.retriever(default_collection, k=k)
+
+    def rag_answer(self, question: str, collections: Optional[List[str]] = None, k: int = 5) -> Dict[str, Any]:
+        collections = collections or [env("DEFAULT_COLLECTION", "swe_bench")]
+        all_docs: List[Document] = []
+        for c in collections:
+            try:
+                all_docs.extend(self.vs.search(c, question, k=k))
+            except Exception:
+                continue
+
+        context = "\n---\n".join([f"[{d.metadata.get('dataset','unknown')}] {d.page_content[:2000]}" for d in all_docs])
+        chain = build_rag_chain(self.llm)
+        answer = chain.run({"context": context, "question": question})
+        return {"answer": answer, "context_docs": [d.metadata for d in all_docs]}
