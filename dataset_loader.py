@@ -1,168 +1,148 @@
+"""
+WB AI CORPORATION - DATASET LOADER MODULE
+Agent: DataSynth + AutoBot
+Purpose: Load and process HuggingFace datasets into ChromaDB
+"""
+
 import os
-import hashlib
-from typing import Dict, Any, Iterable, List, Tuple, Optional
+from typing import List, Dict, Any
+from datasets import load_dataset
+from langchain.docstore.document import Document
+from langchain_community.vectorstores import Chroma
+from langchain_huggingface import HuggingFaceEmbeddings
+from dotenv import load_dotenv
+from tqdm import tqdm
 
-from datasets import load_dataset, DatasetDict, IterableDataset
-from langchain.schema import Document
-from langchain_text_splitters import RecursiveCharacterTextSplitter, Language, CodeSplitter
-from rag_pipeline import RAGResources, env
+load_dotenv()
 
-# Helpers
 
-def _hash_id(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-def _chunker_for_kind(kind: str) -> RecursiveCharacterTextSplitter:
-    # Code-aware defaults
-    if kind == "code":
-        return CodeSplitter.from_language(
-            language=Language.PYTHON,
-            # Python as default; we also fallback to generic chunker when lang unknown
-            chunk_size=800,
-            chunk_overlap=80,
+class WBDatasetLoader:
+    """Enterprise dataset ingestion pipeline"""
+    
+    def __init__(self):
+        self.embedding_model = HuggingFaceEmbeddings(
+            model_name=os.getenv("EMBEDDING_MODEL"),
+            model_kwargs={'device': 'cuda'},
+            encode_kwargs={'normalize_embeddings': True}
         )
-    return RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=80)
+        self.persist_dir = os.getenv("CHROMA_PERSIST_DIR")
+        self.collection_name = os.getenv("COLLECTION_NAME")
+        
+    def load_swe_bench(self, max_samples: int = 500) -> List[Document]:
+        """Load SWE-bench verified dataset"""
+        print("[CodeArchitect] Loading SWE-bench_Verified dataset...")
+        dataset = load_dataset(
+            os.getenv("DATASET_SWE_BENCH"),
+            split="test",
+            streaming=False
+        )
+        
+        documents = []
+        for idx, item in enumerate(tqdm(dataset.select(range(min(max_samples, len(dataset)))))):
+            content = f"""
+            Problem Instance ID: {item.get('instance_id', 'N/A')}
+            Repository: {item.get('repo', 'N/A')}
+            Problem Statement: {item.get('problem_statement', 'N/A')}
+            Hints: {item.get('hints_text', 'N/A')}
+            """
+            
+            documents.append(Document(
+                page_content=content.strip(),
+                metadata={
+                    "source": "swe_bench",
+                    "instance_id": item.get('instance_id', ''),
+                    "repo": item.get('repo', ''),
+                    "idx": idx
+                }
+            ))
+        
+        print(f"[DataSynth] Loaded {len(documents)} SWE-bench documents")
+        return documents
+    
+    def load_stack_v2(self, max_samples: int = 1000) -> List[Document]:
+        """Load The Stack v2 code dataset"""
+        print("[CodeArchitect] Loading the-stack-v2 dataset...")
+        dataset = load_dataset(
+            os.getenv("DATASET_STACK_V2"),
+            split="train",
+            streaming=True
+        )
+        
+        documents = []
+        for idx, item in enumerate(tqdm(dataset.take(max_samples), total=max_samples)):
+            content = item.get('content', '')
+            if len(content) > 100:  # Filter minimal content
+                documents.append(Document(
+                    page_content=content[:4000],  # Truncate large files
+                    metadata={
+                        "source": "stack_v2",
+                        "language": item.get('lang', 'unknown'),
+                        "idx": idx
+                    }
+                ))
+                
+        print(f"[DataSynth] Loaded {len(documents)} Stack-v2 documents")
+        return documents
+    
+    def load_rstar_coder(self, max_samples: int = 500) -> List[Document]:
+        """Load rStar-Coder dataset"""
+        print("[CodeArchitect] Loading rStar-Coder dataset...")
+        dataset = load_dataset(
+            os.getenv("DATASET_RSTAR"),
+            split="train",
+            streaming=False
+        )
+        
+        documents = []
+        for idx, item in enumerate(tqdm(dataset.select(range(min(max_samples, len(dataset)))))):
+            # Combine problem and solution
+            content = f"""
+            Problem: {item.get('problem', 'N/A')}
+            Solution: {item.get('solution', 'N/A')}
+            Explanation: {item.get('explanation', 'N/A')}
+            """
+            
+            documents.append(Document(
+                page_content=content.strip(),
+                metadata={
+                    "source": "rstar_coder",
+                    "difficulty": item.get('difficulty', 'N/A'),
+                    "idx": idx
+                }
+            ))
+        
+        print(f"[DataSynth] Loaded {len(documents)} rStar-Coder documents")
+        return documents
+    
+    def build_vectorstore(self, batch_size: int = 100) -> Chroma:
+        """Build complete ChromaDB vectorstore"""
+        print("[OpsManager] Building ChromaDB vectorstore...")
+        
+        # Aggregate all datasets
+        all_documents = []
+        all_documents.extend(self.load_swe_bench(max_samples=500))
+        all_documents.extend(self.load_stack_v2(max_samples=1000))
+        all_documents.extend(self.load_rstar_coder(max_samples=500))
+        
+        print(f"[DataSynth] Total documents: {len(all_documents)}")
+        
+        # Build vectorstore in batches
+        vectorstore = Chroma(
+            collection_name=self.collection_name,
+            embedding_function=self.embedding_model,
+            persist_directory=self.persist_dir
+        )
+        
+        # Batch processing for memory efficiency
+        for i in tqdm(range(0, len(all_documents), batch_size)):
+            batch = all_documents[i:i+batch_size]
+            vectorstore.add_documents(batch)
+        
+        print("[OpsManager] Vectorstore build complete. Persisting...")
+        return vectorstore
 
-def _add_docs(resources: RAGResources, collection: str, docs: List[Document]) -> Tuple[int, int]:
-    if not docs:
-        return (0, 0)
-    texts = [d.page_content for d in docs]
-    metas = [d.metadata for d in docs]
-    ids = [_hash_id(f"{metas[i].get('source','')}-{texts[i][:64]}") for i in range(len(docs))]
-    return resources.vs.add_texts(collection=collection, texts=texts, metadatas=metas, ids=ids)
 
-# SWE-bench Verified
-
-def ingest_swe_bench(resources: RAGResources, max_docs: int = 500) -> Tuple[int, int]:
-    """
-    Ingests SWE-bench Verified dataset into 'swe_bench' collection.
-    """
-    collection = "swe_bench"
-    docs: List[Document] = []
-    try:
-        ds = load_dataset("princeton-nlp/SWE-bench_Verified", split="train", streaming=True)
-    except Exception:
-        # Fallback to default split if needed
-        ds = load_dataset("princeton-nlp/SWE-bench_Verified", split="train")
-
-    chunker = _chunker_for_kind("text")
-    count = 0
-    for item in ds:
-        if count >= max_docs:
-            break
-        # Common fields in SWE-bench Verified include: repo, problem_statement, patch, test, etc.
-        # We will combine key text fields if present.
-        parts = []
-        for key in ["title", "problem_statement", "summary", "issue_url", "patch", "test", "repo", "instance_id"]:
-            if key in item and item[key]:
-                parts.append(f"{key.upper()}: {item[key]}")
-        content = "\n\n".join(parts).strip()
-        if not content:
-            continue
-        for chunk in chunker.split_text(content):
-            meta = {
-                "dataset": "SWE-bench_Verified",
-                "source": item.get("issue_url", item.get("repo", "swe-bench")),
-                "repo": item.get("repo"),
-                "instance_id": item.get("instance_id"),
-                "kind": "issue_patch",
-            }
-            docs.append(Document(page_content=chunk, metadata=meta))
-        count += 1
-
-    return _add_docs(resources, collection, docs)
-
-# The Stack v2 (filtered sampling)
-
-def ingest_the_stack(resources: RAGResources, max_docs: int = 200, languages: Optional[List[str]] = None) -> Tuple[int, int]:
-    """
-    Ingest filtered subset of bigcode/the-stack-v2 into 'the_stack' collection.
-    Use streaming and optional language filter.
-    """
-    collection = "the_stack"
-    docs: List[Document] = []
-    langs = set([l.strip().lower() for l in (languages or env("THE_STACK_LANGS", "python,javascript").split(",")) if l.strip()])
-
-    try:
-        ds = load_dataset("bigcode/the-stack-v2", split="train", streaming=True)
-    except Exception:
-        ds = load_dataset("bigcode/the-stack-v2", split="train")
-
-    # Heuristic chunker for code
-    code_chunker = _chunker_for_kind("code")
-    count = 0
-    for item in ds:
-        if count >= max_docs:
-            break
-        lang = (item.get("lang") or item.get("language") or "").lower()
-        if langs and lang and lang not in langs:
-            continue
-        content = item.get("content") or item.get("text") or ""
-        if not content:
-            continue
-        # Split code into chunks
-        for chunk in code_chunker.split_text(content):
-            meta = {
-                "dataset": "the-stack-v2",
-                "source": item.get("path", item.get("repo_name", "the-stack")),
-                "lang": lang,
-                "kind": "code",
-            }
-            docs.append(Document(page_content=chunk, metadata=meta))
-        count += 1
-
-    return _add_docs(resources, collection, docs)
-
-# rStar-Coder (if available)
-
-def ingest_rstar(resources: RAGResources, max_docs: int = 200) -> Tuple[int, int]:
-    """
-    Attempt to ingest microsoft/rStar-Coder if available on HF as a dataset.
-    If not available as a dataset, this will no-op safely.
-    """
-    collection = "rstar"
-    docs: List[Document] = []
-    try:
-        ds = load_dataset("microsoft/rStar-Coder", split="train", streaming=True)
-    except Exception:
-        try:
-            ds = load_dataset("microsoft/rStar-Coder", split="train")
-        except Exception:
-            return (0, resources.vs.get_store(collection).__dict__.get("_collection", None).count() if hasattr(resources.vs.get_store(collection), "_collection") else 0)  # type: ignore
-
-    chunker = _chunker_for_kind("code")
-    count = 0
-    for item in ds:
-        if count >= max_docs:
-            break
-        content = item.get("content") or item.get("text") or ""
-        if not content:
-            continue
-        for chunk in chunker.split_text(content):
-            meta = {
-                "dataset": "rStar-Coder",
-                "source": item.get("path", "rstar"),
-                "kind": "code",
-            }
-            docs.append(Document(page_content=chunk, metadata=meta))
-        count += 1
-
-    return _add_docs(resources, collection, docs)
-
-# Public API
-
-def ingest_all(
-    resources: RAGResources,
-    swe_max: int = 500,
-    stack_max: int = 200,
-    rstar_max: int = 200,
-    stack_langs: Optional[List[str]] = None,
-) -> Dict[str, Any]:
-    swe_added, swe_total = ingest_swe_bench(resources, swe_max)
-    stack_added, stack_total = ingest_the_stack(resources, stack_max, stack_langs)
-    rstar_added, rstar_total = ingest_rstar(resources, rstar_max)
-    return {
-        "swe_bench": {"added": swe_added, "total": swe_total},
-        "the_stack": {"added": stack_added, "total": stack_total},
-        "rstar": {"added": rstar_added, "total": rstar_total},
-    }
+if __name__ == "__main__":
+    loader = WBDatasetLoader()
+    vectorstore = loader.build_vectorstore()
+    print("[WB AI] Dataset ingestion complete. Vectorstore ready.")
