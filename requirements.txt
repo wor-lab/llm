@@ -23,6 +23,8 @@ uvicorn
 pydantic
 pyngrok
 python-multipart
+python-dotenv
+pydantic-settings
 
 # Data Processing
 datasets
