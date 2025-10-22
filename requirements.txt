@@ -3,6 +3,7 @@
 
 langchain
 langgraph
+langchain-community
 chromadb
 datasets
 transformers
@@ -13,3 +14,10 @@ pyngrok
 python-dotenv
 torch
 pydantic
+bitsandbytes
+aiohttp
+tenacity
+numpy
+pandas
+tqdm
+accelerate
