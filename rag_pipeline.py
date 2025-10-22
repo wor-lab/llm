@@ -28,7 +28,7 @@ Be confident and direct. No apologies or disclaimers."""
         self,
         chroma_client,
         collection_name: str,
-        model_name: str = "Qwen/Qwen2.5-1.5B-Instruct",
+        model_name: str = "Qwen/Qwen3-1.7B",
         max_tokens: int = 2048,
         temperature: float = 0.7,
         top_k: int = 5
