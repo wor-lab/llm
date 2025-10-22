@@ -14,6 +14,7 @@ pyngrok
 python-dotenv
 torch
 pydantic
+pydantic-settings
 bitsandbytes
 aiohttp
 tenacity
