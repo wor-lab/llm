@@ -1,43 +1,15 @@
 # WB AI CORPORATION - PRODUCTION DEPENDENCIES
 # Stack: Langchain, LangGraph, ChromaDB, Agentic RAG
 
-# Core Framework
 langchain
-langchain-community
 langgraph
-langchain-core
-
-# Vector Store
 chromadb
-sentence-transformers
-
-# LLM Inference
+datasets
 transformers
-torch
-accelerate
-bitsandbytes
-
-# API Server
+sentence-transformers
 fastapi
 uvicorn
-pydantic
 pyngrok
-python-multipart
 python-dotenv
-pydantic-settings
-
-# Data Processing
-datasets
-huggingface-hub
-pandas
-numpy
-
-# Utilities
-python-dotenv
-httpx
-tqdm
-tiktoken
-aiofiles
-tenacity
-loguru
-prometheus-fastapi-instrumentator
+torch
+pydantic
